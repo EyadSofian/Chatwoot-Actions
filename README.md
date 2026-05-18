@@ -31,8 +31,28 @@ $env:CHATWOOT_BASE_URL="https://chatwoot.example.com"
 $env:CHATWOOT_ACCOUNT_ID="1"
 $env:CHATWOOT_API_TOKEN="your-user-access-token"
 $env:CHATWOOT_OPS_PORT="3317"
+$env:OPS_USERNAME="admin"
+$env:OPS_PASSWORD="use-a-strong-password"
 npm start
 ```
+
+## Railway
+
+Railway provides a `PORT` variable automatically, and the app listens on `0.0.0.0:$PORT` in production.
+
+Set these Railway variables:
+
+```text
+CHATWOOT_BASE_URL=https://your-chatwoot-domain.com
+CHATWOOT_ACCOUNT_ID=1
+CHATWOOT_API_TOKEN=your-user-access-token
+OPS_USERNAME=admin
+OPS_PASSWORD=use-a-strong-password
+```
+
+If you want local audit logs, bulk job history, webhook events, and campaign counters to persist after redeploys, attach a Railway Volume. Either mount it to `/app/data`, or mount it anywhere and set `DATA_DIR` to that mount path.
+
+Use `/api/health` as the healthcheck path.
 
 ## Chatwoot setup
 

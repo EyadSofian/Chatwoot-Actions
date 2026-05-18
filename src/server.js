@@ -10,7 +10,8 @@ import { buildBulkPreview, executeBulkAction, getReportsSummary, makeClient, pro
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const publicDir = join(rootDir, "public");
 const cliPort = process.argv.find(arg => arg.startsWith("--port="))?.split("=")[1];
-const port = Number(cliPort || process.env.CHATWOOT_OPS_PORT || 3317);
+const port = Number(cliPort || process.env.CHATWOOT_OPS_PORT || process.env.PORT || 3317);
+const host = process.env.HOST || "0.0.0.0";
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -22,6 +23,14 @@ const mimeTypes = {
 
 const server = createServer(async (req, res) => {
   try {
+    if (!isAuthorized(req)) {
+      res.writeHead(401, {
+        "www-authenticate": 'Basic realm="Chatwoot Ops Console"',
+        "content-type": "text/plain; charset=utf-8"
+      });
+      res.end("Authentication required");
+      return;
+    }
     await route(req, res);
   } catch (error) {
     sendJson(res, error.status || 500, {
@@ -31,9 +40,27 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, () => {
-  console.log(`Chatwoot Ops Console running at http://localhost:${port}`);
+server.listen(port, host, () => {
+  console.log(`Chatwoot Ops Console running at http://${host}:${port}`);
 });
+
+function isAuthorized(req) {
+  const password = process.env.OPS_PASSWORD;
+  if (!password) return true;
+
+  const username = process.env.OPS_USERNAME || "admin";
+  const header = req.headers.authorization || "";
+  const [scheme, encoded] = header.split(" ");
+  if (scheme !== "Basic" || !encoded) return false;
+
+  const decoded = Buffer.from(encoded, "base64").toString("utf8");
+  const separator = decoded.indexOf(":");
+  if (separator === -1) return false;
+
+  const requestUsername = decoded.slice(0, separator);
+  const requestPassword = decoded.slice(separator + 1);
+  return requestUsername === username && requestPassword === password;
+}
 
 async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
