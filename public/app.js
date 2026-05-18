@@ -1,5 +1,6 @@
 const state = {
   tab: "actions",
+  lang: loadLanguage(),
   connection: loadConnection(),
   agents: [],
   teams: [],
@@ -16,6 +17,172 @@ const state = {
     action: "assign_agent",
     ownerAttribute: "sales_owner_id",
     maxPages: 20
+  }
+};
+
+const translations = {
+  ar: {
+    "Actions": "الإجراءات",
+    "Dashboard": "لوحة المتابعة",
+    "Campaigns": "الحملات",
+    "Logs": "السجل",
+    "Exports": "التصدير",
+    "Setup": "الإعداد",
+    "Run bulk transfers safely in three steps: choose, preview, execute.": "نفذ التحويلات الجماعية بأمان في ثلاث خطوات: اختار، راجع، نفذ.",
+    "Counters, report snapshots, and Chatwoot embedded context.": "أرقام سريعة، تقارير، وسياق Chatwoot داخل التطبيق.",
+    "Track local campaigns and Chatwoot webhook reply signals.": "تابع الحملات المحلية وردود العملاء من Webhooks.",
+    "Who did what, when, and which bulk job changed it.": "اعرف مين عمل إيه، إمتى، وأي عملية جماعية نفذتها.",
+    "Download CSV files for audit logs, campaigns, and bulk jobs.": "حمل ملفات CSV للسجل والحملات والعمليات الجماعية.",
+    "Connect this app to your self-hosted Chatwoot instance.": "اربط التطبيق بنسخة Chatwoot self-hosted.",
+    "Transfer to agent": "تحويل لموظف",
+    "Agent": "موظف",
+    "Move all selected conversations from one sales/agent to another.": "انقل المحادثات المختارة من موظف أو سيلز لموظف آخر.",
+    "Remove assignee": "إزالة التعيين",
+    "Unassign": "بدون تعيين",
+    "Take conversations away from an agent and return them to Unassigned.": "شيل المحادثات من الموظف ورجعها بدون تعيين.",
+    "Move to team": "تحويل لفريق",
+    "Team": "فريق",
+    "Route a batch of conversations to a team queue.": "حول مجموعة محادثات إلى Queue فريق معين.",
+    "Transfer customer owner": "تحويل مسؤول العميل",
+    "Owner": "مسؤول",
+    "Change the contact owner custom attribute, with optional conversation reassignment.": "غير مسؤول العميل في custom attribute مع إمكانية تحويل محادثاته.",
+    "Quick actions": "إجراءات سريعة",
+    "Pick the job you want. Nothing is changed until you preview and confirm.": "اختار العملية المطلوبة. مفيش أي تغيير بيحصل غير بعد المعاينة والتأكيد.",
+    "Connected": "متصل",
+    "Needs setup": "محتاج إعداد",
+    "How it works": "طريقة العمل",
+    "Choose action": "اختار الإجراء",
+    "Select transfer, unassign, team routing, or contact owner transfer.": "اختار تحويل، إزالة تعيين، تحويل لفريق، أو تحويل مسؤول العميل.",
+    "Preview": "معاينة",
+    "The app asks Chatwoot for matching conversations/customers and shows the exact rows.": "التطبيق يجيب من Chatwoot العملاء أو المحادثات المطابقة ويعرضها قبل التنفيذ.",
+    "Execute": "تنفيذ",
+    "Only after confirmation, it calls Chatwoot assignment/contact APIs and logs every row.": "بعد التأكيد فقط، التطبيق ينفذ من خلال APIs ويسجل كل صف اتغير.",
+    "For Chatwoot Dashboard App usage: add the Railway URL in Chatwoot Settings -> Integrations -> Dashboard Apps.": "لاستخدامه داخل Chatwoot: ضيف رابط Railway من Settings -> Integrations -> Dashboard Apps.",
+    "Bulk action": "إجراء جماعي",
+    "previewed": "تمت معاينتها",
+    "Preview affected rows": "معاينة الصفوف المتأثرة",
+    "Execute confirmed action": "تنفيذ الإجراء المؤكد",
+    "Preview before execution": "المعاينة قبل التنفيذ",
+    "Review the first 100 affected rows. Export full results after execution.": "راجع أول 100 صف متأثر. تقدر تصدر النتائج كاملة بعد التنفيذ.",
+    "rows": "صف",
+    "Open": "مفتوحة",
+    "Unassigned": "غير معينة",
+    "Unattended": "بدون متابعة",
+    "Chatwoot Reports": "تقارير Chatwoot",
+    "Load reports": "تحميل التقارير",
+    "Dashboard App Context": "سياق Dashboard App",
+    "Request context": "طلب السياق",
+    "Create Local Campaign Tracker": "إنشاء متابعة حملة محلية",
+    "Campaign name": "اسم الحملة",
+    "May outbound": "حملة مايو",
+    "Chatwoot campaign ID": "رقم حملة Chatwoot",
+    "Owner / sales": "المسؤول / السيلز",
+    "Audience note": "ملاحظة الجمهور",
+    "VIP label": "عملاء VIP",
+    "Create tracker": "إنشاء المتابعة",
+    "Configure Chatwoot webhooks to call": "اضبط Chatwoot webhooks عشان تستدعي",
+    "for message_created and message_updated events.": "لأحداث message_created و message_updated.",
+    "Webhook Events": "أحداث Webhook",
+    "Load events": "تحميل الأحداث",
+    "Refresh": "تحديث",
+    "Action Log": "سجل الإجراءات",
+    "Fetch Chatwoot audit": "جلب Audit من Chatwoot",
+    "CSV Downloads": "تحميل CSV",
+    "Audit CSV": "سجل الإجراءات CSV",
+    "Campaign CSV": "الحملات CSV",
+    "Bulk jobs": "العمليات الجماعية",
+    "Chatwoot connection": "اتصال Chatwoot",
+    "These values can also live in Railway environment variables.": "القيم دي ممكن تتحط كمان في Environment Variables على Railway.",
+    "Chatwoot base URL": "رابط Chatwoot الأساسي",
+    "Account ID": "رقم الحساب",
+    "User access token": "توكن المستخدم",
+    "Operator name": "اسم المشغل",
+    "Save and test": "حفظ وتجربة",
+    "Clear local settings": "مسح الإعدادات المحلية",
+    "Add it inside Chatwoot": "إضافته داخل Chatwoot",
+    "Open Chatwoot": "افتح Chatwoot",
+    "Go to Settings -> Integrations -> Dashboard Apps.": "ادخل Settings -> Integrations -> Dashboard Apps.",
+    "Add app URL": "ضيف رابط التطبيق",
+    "Paste your Railway public URL, then save.": "حط رابط Railway العام واعمل حفظ.",
+    "Open any conversation": "افتح أي محادثة",
+    "A new tab appears in the conversation panel and sends context to this app.": "هيظهر Tab جديد داخل المحادثة ويبعت السياق للتطبيق.",
+    "Keep OPS_PASSWORD enabled on Railway. Chatwoot will ask for the same username/password the first time the embedded tab opens.": "خلي OPS_PASSWORD شغال على Railway. أول مرة التاب يفتح داخل Chatwoot هيطلب نفس اسم المستخدم وكلمة السر.",
+    "Connected config": "الإعدادات متصلة",
+    "Not connected": "غير متصل",
+    "Save Chatwoot connection first.": "احفظ اتصال Chatwoot الأول.",
+    "Connection saved locally.": "تم حفظ الاتصال محليًا.",
+    "Requested Chatwoot dashboard context.": "تم طلب سياق Chatwoot.",
+    "Fetched {count} Enterprise audit rows.": "تم جلب {count} سجل Audit من Enterprise.",
+    "Bulk job finished: {succeeded}/{total} succeeded.": "انتهت العملية: {succeeded}/{total} تمت بنجاح.",
+    "Execute {action} on {count} item(s)?": "تنفذ {action} على {count} عنصر؟",
+    "Dashboard context": "سياق Chatwoot",
+    "No embedded context received.": "لم يصل سياق من Chatwoot.",
+    "Open this app as a Chatwoot Dashboard App to receive conversation, contact, and currentAgent context.": "افتح التطبيق كـ Dashboard App داخل Chatwoot عشان يستقبل بيانات المحادثة والعميل والموظف الحالي.",
+    "Preview first. The app will show exactly which conversations/customers are affected before it writes anything.": "اعمل معاينة الأول. التطبيق هيعرض بالظبط المحادثات أو العملاء المتأثرين قبل أي تعديل.",
+    "Running inside Chatwoot": "يعمل داخل Chatwoot",
+    "Standalone mode": "وضع منفصل",
+    "It works from Railway now. To make it feel native in Chatwoot, add this URL as a Dashboard App.": "التطبيق شغال من Railway حاليًا. عشان يبقى داخل Chatwoot، ضيف الرابط كـ Dashboard App.",
+    "Refresh context": "تحديث السياق",
+    "Setup guide": "شرح الإعداد",
+    "1. Action": "1. الإجراء",
+    "2. Filters": "2. الفلاتر",
+    "3. Preview": "3. المعاينة",
+    "4. Execute": "4. التنفيذ",
+    "What should be changed?": "إيه اللي هيتغير؟",
+    "Conversations": "المحادثات",
+    "Customer owner field": "مسؤول العميل",
+    "Conversation status": "حالة المحادثة",
+    "Pending": "معلقة",
+    "Resolved": "مغلقة",
+    "Snoozed": "مؤجلة",
+    "All": "الكل",
+    "Current owner / from sales": "المسؤول الحالي / من سيلز",
+    "Current assignee": "الموظف الحالي",
+    "Action": "الإجراء",
+    "Transfer owner": "تحويل المسؤول",
+    "Remove owner": "إزالة المسؤول",
+    "Remove assignee": "إزالة التعيين",
+    "New owner / to sales": "المسؤول الجديد / إلى سيلز",
+    "New assignee": "الموظف الجديد",
+    "Target team": "الفريق المستهدف",
+    "Owner custom attribute": "Custom attribute للمسؤول",
+    "Safety limit: pages to scan": "حد الأمان: عدد الصفحات للفحص",
+    "Also reassign conversations for these customers": "حوّل محادثات العملاء دول كمان",
+    "Tip: start with Open conversations and a small page limit. After Preview looks correct, increase the limit and execute.": "نصيحة: ابدأ بالمحادثات المفتوحة وحد صفحات صغير. بعد ما المعاينة تبقى مظبوطة، زود الحد ونفذ.",
+    "Select agent": "اختار موظف",
+    "Select team": "اختار فريق",
+    "No rows yet.": "لا توجد بيانات بعد.",
+    "Download": "تحميل",
+    "createdAt": "تاريخ الإنشاء",
+    "action": "الإجراء",
+    "summary": "الملخص",
+    "actor.name": "من نفذ",
+    "metadata.jobId": "رقم العملية",
+    "receivedAt": "وقت الاستلام",
+    "event": "الحدث",
+    "campaignId": "رقم الحملة",
+    "name": "الاسم",
+    "chatwootCampaignId": "رقم حملة Chatwoot",
+    "ownerName": "المسؤول",
+    "sentCount": "تم الإرسال",
+    "deliveredCount": "تم التسليم",
+    "repliedCount": "ردود",
+    "failedCount": "فشل",
+    "total": "الإجمالي",
+    "succeeded": "نجح",
+    "failed": "فشل",
+    "id": "الرقم",
+    "type": "النوع",
+    "conversationId": "رقم المحادثة",
+    "contactId": "رقم العميل",
+    "contactName": "اسم العميل",
+    "status": "الحالة",
+    "assigneeName": "الموظف",
+    "source": "المصدر",
+    "metric": "المؤشر",
+    "points": "النقاط",
+    "Ops Console": "لوحة العمليات",
+    "Bulk control for Chatwoot": "تحكم جماعي لـ Chatwoot"
   }
 };
 
@@ -67,8 +234,10 @@ const quickActions = {
 
 document.addEventListener("DOMContentLoaded", () => {
   setEmbeddedMode();
+  applyLocale();
   renderNav();
   bindDashboardAppContext();
+  document.getElementById("language-toggle").addEventListener("click", toggleLanguage);
   document.getElementById("refresh-button").addEventListener("click", refreshActiveTab);
   render();
   refreshBaseData();
@@ -78,7 +247,7 @@ function renderNav() {
   const containers = [document.getElementById("nav"), document.getElementById("compact-nav")].filter(Boolean);
   containers.forEach(nav => {
     nav.innerHTML = tabs.map(([id, label]) => (
-      `<button type="button" data-tab="${id}" class="${state.tab === id ? "active" : ""}">${label}</button>`
+      `<button type="button" data-tab="${id}" class="${state.tab === id ? "active" : ""}">${tr(label)}</button>`
     )).join("");
     nav.querySelectorAll("button").forEach(button => {
       button.addEventListener("click", () => {
@@ -93,9 +262,9 @@ function renderNav() {
 function render() {
   renderNav();
   const [title, subtitle] = titles[state.tab];
-  document.getElementById("page-title").textContent = title;
-  document.getElementById("page-subtitle").textContent = subtitle;
-  document.getElementById("connection-state").textContent = hasConnection() ? "Connected config" : "Not connected";
+  document.getElementById("page-title").textContent = tr(title);
+  document.getElementById("page-subtitle").textContent = tr(subtitle);
+  document.getElementById("connection-state").textContent = hasConnection() ? tr("Connected config") : tr("Not connected");
   document.getElementById("connection-state").className = `pill ${hasConnection() ? "ok" : "neutral"}`;
   renderContextBox();
 
@@ -118,57 +287,57 @@ function actionsView() {
       <section class="panel action-panel">
         <div class="panel-header">
           <div>
-            <h2>Quick actions</h2>
-            <p class="panel-note">Pick the job you want. Nothing is changed until you preview and confirm.</p>
+            <h2>${tr("Quick actions")}</h2>
+            <p class="panel-note">${tr("Pick the job you want. Nothing is changed until you preview and confirm.")}</p>
           </div>
-          <span class="pill ${hasConnection() ? "ok" : "warn"}">${hasConnection() ? "Connected" : "Needs setup"}</span>
+          <span class="pill ${hasConnection() ? "ok" : "warn"}">${hasConnection() ? tr("Connected") : tr("Needs setup")}</span>
         </div>
         <div class="panel-body">
           <div class="action-cards">
             ${Object.entries(quickActions).map(([id, action]) => `
               <button class="action-card ${activePreset === id ? "active" : ""}" type="button" data-quick-action="${id}">
-                <span>${action.shortLabel}</span>
-                <strong>${action.label}</strong>
-                <small>${action.description}</small>
+                <span>${tr(action.shortLabel)}</span>
+                <strong>${tr(action.label)}</strong>
+                <small>${tr(action.description)}</small>
               </button>
             `).join("")}
           </div>
         </div>
       </section>
       <aside class="guide-panel">
-        <h2>How it works</h2>
+        <h2>${tr("How it works")}</h2>
         <ol class="steps-list">
-          <li><strong>Choose action</strong><span>Select transfer, unassign, team routing, or contact owner transfer.</span></li>
-          <li><strong>Preview</strong><span>The app asks Chatwoot for matching conversations/customers and shows the exact rows.</span></li>
-          <li><strong>Execute</strong><span>Only after confirmation, it calls Chatwoot assignment/contact APIs and logs every row.</span></li>
+          <li><strong>${tr("Choose action")}</strong><span>${tr("Select transfer, unassign, team routing, or contact owner transfer.")}</span></li>
+          <li><strong>${tr("Preview")}</strong><span>${tr("The app asks Chatwoot for matching conversations/customers and shows the exact rows.")}</span></li>
+          <li><strong>${tr("Execute")}</strong><span>${tr("Only after confirmation, it calls Chatwoot assignment/contact APIs and logs every row.")}</span></li>
         </ol>
-        <p class="guide-note">For Chatwoot Dashboard App usage: add the Railway URL in Chatwoot Settings -> Integrations -> Dashboard Apps.</p>
+        <p class="guide-note">${tr("For Chatwoot Dashboard App usage: add the Railway URL in Chatwoot Settings -> Integrations -> Dashboard Apps.")}</p>
       </aside>
     </div>
     <section class="panel" style="margin-top:16px">
       <div class="panel-header">
         <div>
-          <h2>${quickActions[activePreset]?.label || "Bulk action"}</h2>
-          <p class="panel-note">${quickActions[activePreset]?.description || ""}</p>
+          <h2>${tr(quickActions[activePreset]?.label || "Bulk action")}</h2>
+          <p class="panel-note">${tr(quickActions[activePreset]?.description || "")}</p>
         </div>
-        <span class="pill neutral">${state.preview?.count ?? 0} previewed</span>
+        <span class="pill neutral">${state.preview?.count ?? 0} ${tr("previewed")}</span>
       </div>
       <div class="panel-body">
         ${workflowSteps()}
         ${actionForm(criteria)}
         <div class="actions sticky-actions">
-          <button class="button" data-action="preview-bulk">Preview affected rows</button>
-          <button class="button danger" data-action="execute-bulk" ${state.preview?.count ? "" : "disabled"}>Execute confirmed action</button>
+          <button class="button" data-action="preview-bulk">${tr("Preview affected rows")}</button>
+          <button class="button danger" data-action="execute-bulk" ${state.preview?.count ? "" : "disabled"}>${tr("Execute confirmed action")}</button>
         </div>
       </div>
     </section>
     <section class="panel" style="margin-top:16px">
       <div class="panel-header">
         <div>
-          <h2>Preview before execution</h2>
-          <p class="panel-note">Review the first 100 affected rows. Export full results after execution.</p>
+          <h2>${tr("Preview before execution")}</h2>
+          <p class="panel-note">${tr("Review the first 100 affected rows. Export full results after execution.")}</p>
         </div>
-        ${state.preview ? `<span class="pill warn">${state.preview.count} rows</span>` : ""}
+        ${state.preview ? `<span class="pill warn">${state.preview.count} ${tr("rows")}</span>` : ""}
       </div>
       <div class="panel-body">${previewTable()}</div>
     </section>
@@ -186,11 +355,11 @@ function dashboardView() {
     </div>
     <div class="grid two" style="margin-top:16px">
       <section class="panel">
-        <div class="panel-header"><h2>Chatwoot Reports</h2><button class="button secondary" data-action="load-reports">Load reports</button></div>
+        <div class="panel-header"><h2>${tr("Chatwoot Reports")}</h2><button class="button secondary" data-action="load-reports">${tr("Load reports")}</button></div>
         <div class="panel-body">${reportsTable()}</div>
       </section>
       <section class="panel">
-        <div class="panel-header"><h2>Dashboard App Context</h2><button class="button secondary" data-action="request-context">Request context</button></div>
+        <div class="panel-header"><h2>${tr("Dashboard App Context")}</h2><button class="button secondary" data-action="request-context">${tr("Request context")}</button></div>
         <div class="panel-body">${contextDetails()}</div>
       </section>
     </div>
@@ -201,11 +370,39 @@ function bulkView() {
   return actionsView();
 }
 
+function toggleLanguage() {
+  state.lang = state.lang === "ar" ? "en" : "ar";
+  localStorage.setItem("chatwootOpsLanguage", state.lang);
+  const url = new URL(window.location.href);
+  url.searchParams.set("lang", state.lang);
+  window.history.replaceState(null, "", url);
+  applyLocale();
+  render();
+}
+
+function applyLocale() {
+  const isArabic = state.lang === "ar";
+  document.documentElement.lang = isArabic ? "ar" : "en";
+  document.documentElement.dir = isArabic ? "rtl" : "ltr";
+  document.body.classList.toggle("rtl", isArabic);
+  const brandTitle = document.getElementById("brand-title");
+  const brandSubtitle = document.getElementById("brand-subtitle");
+  const refreshButton = document.getElementById("refresh-button");
+  const languageToggle = document.getElementById("language-toggle");
+  if (brandTitle) brandTitle.textContent = tr("Ops Console");
+  if (brandSubtitle) brandSubtitle.textContent = tr("Bulk control for Chatwoot");
+  if (refreshButton) refreshButton.textContent = tr("Refresh");
+  if (languageToggle) {
+    languageToggle.textContent = isArabic ? "English" : "العربية";
+    languageToggle.title = isArabic ? "Switch to English" : "التحويل للعربية";
+  }
+}
+
 function campaignsView() {
   return `
     <div class="grid two">
       <section class="panel">
-        <div class="panel-header"><h2>Create Local Campaign Tracker</h2></div>
+        <div class="panel-header"><h2>${tr("Create Local Campaign Tracker")}</h2></div>
         <div class="panel-body">
           <div class="form-grid">
             ${inputField("campaignName", "Campaign name", "May outbound")}
@@ -213,17 +410,17 @@ function campaignsView() {
             ${agentSelect("campaignOwnerId", "Owner / sales")}
             ${inputField("campaignAudience", "Audience note", "VIP label")}
           </div>
-          <div class="actions"><button class="button" data-action="create-campaign">Create tracker</button></div>
-          <p class="notice">Configure Chatwoot webhooks to call <strong>/api/webhooks/chatwoot</strong> for message_created and message_updated events.</p>
+          <div class="actions"><button class="button" data-action="create-campaign">${tr("Create tracker")}</button></div>
+          <p class="notice">${tr("Configure Chatwoot webhooks to call")} <strong>/api/webhooks/chatwoot</strong> ${tr("for message_created and message_updated events.")}</p>
         </div>
       </section>
       <section class="panel">
-        <div class="panel-header"><h2>Webhook Events</h2><button class="button secondary" data-action="load-webhooks">Load events</button></div>
+        <div class="panel-header"><h2>${tr("Webhook Events")}</h2><button class="button secondary" data-action="load-webhooks">${tr("Load events")}</button></div>
         <div class="panel-body">${simpleTable(state.webhooks.slice(0, 8), ["receivedAt", "event", "campaignId"])}</div>
       </section>
     </div>
     <section class="panel" style="margin-top:16px">
-      <div class="panel-header"><h2>Campaigns</h2><button class="button secondary" data-action="load-campaigns">Refresh</button></div>
+      <div class="panel-header"><h2>${tr("Campaigns")}</h2><button class="button secondary" data-action="load-campaigns">${tr("Refresh")}</button></div>
       <div class="panel-body">${simpleTable(state.campaigns, ["createdAt", "name", "chatwootCampaignId", "ownerName", "sentCount", "deliveredCount", "repliedCount", "failedCount"])}</div>
     </section>
   `;
@@ -233,10 +430,10 @@ function auditView() {
   return `
     <section class="panel">
       <div class="panel-header">
-        <h2>Action Log</h2>
+        <h2>${tr("Action Log")}</h2>
         <div class="actions" style="margin:0">
-          <button class="button secondary" data-action="fetch-chatwoot-audit">Fetch Chatwoot audit</button>
-          <button class="button secondary" data-action="load-audit">Refresh</button>
+          <button class="button secondary" data-action="fetch-chatwoot-audit">${tr("Fetch Chatwoot audit")}</button>
+          <button class="button secondary" data-action="load-audit">${tr("Refresh")}</button>
         </div>
       </div>
       <div class="panel-body">${simpleTable(state.audit, ["createdAt", "action", "summary", "actor.name", "metadata.jobId"])}</div>
@@ -247,13 +444,13 @@ function auditView() {
 function exportsView() {
   return `
     <section class="panel">
-      <div class="panel-header"><h2>CSV Downloads</h2></div>
+      <div class="panel-header"><h2>${tr("CSV Downloads")}</h2></div>
       <div class="panel-body">
         <div class="actions">
-          <a class="button secondary" href="/api/audit/export.csv">Audit CSV</a>
-          <a class="button secondary" href="/api/campaigns/export.csv">Campaign CSV</a>
+          <a class="button secondary" href="/api/audit/export.csv">${tr("Audit CSV")}</a>
+          <a class="button secondary" href="/api/campaigns/export.csv">${tr("Campaign CSV")}</a>
         </div>
-        <h3>Bulk jobs</h3>
+        <h3>${tr("Bulk jobs")}</h3>
         ${jobsTable()}
       </div>
     </section>
@@ -266,8 +463,8 @@ function settingsView() {
       <section class="panel">
         <div class="panel-header">
           <div>
-            <h2>Chatwoot connection</h2>
-            <p class="panel-note">These values can also live in Railway environment variables.</p>
+            <h2>${tr("Chatwoot connection")}</h2>
+            <p class="panel-note">${tr("These values can also live in Railway environment variables.")}</p>
           </div>
         </div>
         <div class="panel-body">
@@ -278,20 +475,20 @@ function settingsView() {
             ${inputField("operatorName", "Operator name", state.connection.operatorName || "Ops Admin")}
           </div>
           <div class="actions">
-            <button class="button" data-action="save-settings">Save and test</button>
-            <button class="button secondary" data-action="clear-settings">Clear local settings</button>
+            <button class="button" data-action="save-settings">${tr("Save and test")}</button>
+            <button class="button secondary" data-action="clear-settings">${tr("Clear local settings")}</button>
           </div>
         </div>
       </section>
       <section class="panel">
-        <div class="panel-header"><h2>Add it inside Chatwoot</h2></div>
+        <div class="panel-header"><h2>${tr("Add it inside Chatwoot")}</h2></div>
         <div class="panel-body">
           <ol class="steps-list compact">
-            <li><strong>Open Chatwoot</strong><span>Go to Settings -> Integrations -> Dashboard Apps.</span></li>
-            <li><strong>Add app URL</strong><span>Paste your Railway public URL, then save.</span></li>
-            <li><strong>Open any conversation</strong><span>A new tab appears in the conversation panel and sends context to this app.</span></li>
+            <li><strong>${tr("Open Chatwoot")}</strong><span>${tr("Go to Settings -> Integrations -> Dashboard Apps.")}</span></li>
+            <li><strong>${tr("Add app URL")}</strong><span>${tr("Paste your Railway public URL, then save.")}</span></li>
+            <li><strong>${tr("Open any conversation")}</strong><span>${tr("A new tab appears in the conversation panel and sends context to this app.")}</span></li>
           </ol>
-          <p class="notice">Keep <code>OPS_PASSWORD</code> enabled on Railway. Chatwoot will ask for the same username/password the first time the embedded tab opens.</p>
+          <p class="notice">${tr("Keep OPS_PASSWORD enabled on Railway. Chatwoot will ask for the same username/password the first time the embedded tab opens.")}</p>
         </div>
       </section>
     </div>
@@ -368,14 +565,14 @@ function selectQuickAction(id) {
 }
 
 async function loadReports() {
-  if (!hasConnection()) return notify("Save Chatwoot connection first.", "warn");
+  if (!hasConnection()) return notify(tr("Save Chatwoot connection first."), "warn");
   const data = await api("/api/reports/summary", { connection: state.connection });
   state.metrics = data;
   render();
 }
 
 async function previewBulk() {
-  if (!hasConnection()) return notify("Save Chatwoot connection first.", "warn");
+  if (!hasConnection()) return notify(tr("Save Chatwoot connection first."), "warn");
   const criteria = getBulkCriteria();
   state.bulkCriteria = criteria;
   const data = await api("/api/bulk/preview", { connection: state.connection, criteria });
@@ -387,7 +584,7 @@ async function executeBulk() {
   if (!state.preview?.items?.length) return;
   const criteria = state.preview.criteria || getBulkCriteria();
   const actor = state.appContext?.currentAgent || { name: state.connection.operatorName || "Ops Admin" };
-  const confirmed = window.confirm(`Execute ${criteria.action} on ${state.preview.items.length} item(s)?`);
+  const confirmed = window.confirm(tr("Execute {action} on {count} item(s)?", { action: criteria.action, count: state.preview.items.length }));
   if (!confirmed) return;
   const job = await api("/api/bulk/execute", {
     connection: state.connection,
@@ -397,7 +594,7 @@ async function executeBulk() {
   });
   state.preview = null;
   await loadJobs();
-  notify(`Bulk job finished: ${job.succeeded}/${job.total} succeeded.`, job.failed ? "warn" : "ok");
+  notify(tr("Bulk job finished: {succeeded}/{total} succeeded.", { succeeded: job.succeeded, total: job.total }), job.failed ? "warn" : "ok");
   state.tab = "exports";
   render();
 }
@@ -411,7 +608,7 @@ async function saveSettings() {
   };
   localStorage.setItem("chatwootOpsConnection", JSON.stringify(state.connection));
   await refreshBaseData();
-  notify("Connection saved locally.", "ok");
+  notify(tr("Connection saved locally."), "ok");
 }
 
 function clearSettings() {
@@ -429,12 +626,12 @@ async function loadAudit() {
 }
 
 async function fetchChatwootAudit() {
-  if (!hasConnection()) return notify("Save Chatwoot connection first.", "warn");
+  if (!hasConnection()) return notify(tr("Save Chatwoot connection first."), "warn");
   const data = await api("/api/chatwoot/audit", {
     connection: state.connection,
     actor: state.appContext?.currentAgent || { name: state.connection.operatorName || "Ops Admin" }
   });
-  notify(`Fetched ${data.audit_logs?.length || 0} Enterprise audit rows.`, "ok");
+  notify(tr("Fetched {count} Enterprise audit rows.", { count: data.audit_logs?.length || 0 }), "ok");
   await loadAudit();
 }
 
@@ -509,9 +706,24 @@ function setEmbeddedMode() {
   }
 }
 
+function loadLanguage() {
+  const requested = new URLSearchParams(window.location.search).get("lang");
+  if (requested === "ar" || requested === "en") return requested;
+  const saved = localStorage.getItem("chatwootOpsLanguage");
+  return saved === "ar" ? "ar" : "en";
+}
+
+function tr(text, values = {}) {
+  const translated = state.lang === "ar" ? translations.ar[text] || text : text;
+  return Object.entries(values).reduce(
+    (output, [key, value]) => output.replaceAll(`{${key}}`, String(value)),
+    translated
+  );
+}
+
 function requestDashboardContext() {
   window.parent?.postMessage("chatwoot-dashboard-app:fetch-info", "*");
-  notify("Requested Chatwoot dashboard context.", "neutral");
+  notify(tr("Requested Chatwoot dashboard context."), "neutral");
 }
 
 function renderContextBox() {
@@ -521,8 +733,8 @@ function renderContextBox() {
   const contact = state.appContext?.contact;
   const conversation = state.appContext?.conversation;
   box.innerHTML = agent || contact || conversation
-    ? `<strong>Dashboard context</strong><br>Agent: ${escapeHtml(agent?.name || "-")}<br>Contact: ${escapeHtml(contact?.name || "-")}<br>Conversation: ${conversation?.id || "-"}`
-    : `<strong>Dashboard context</strong><br><span>No embedded context received.</span>`;
+    ? `<strong>${tr("Dashboard context")}</strong><br>${tr("Agent")}: ${escapeHtml(agent?.name || "-")}<br>${tr("contactName")}: ${escapeHtml(contact?.name || "-")}<br>${tr("conversationId")}: ${conversation?.id || "-"}`
+    : `<strong>${tr("Dashboard context")}</strong><br><span>${tr("No embedded context received.")}</span>`;
 }
 
 function reportsTable() {
@@ -536,12 +748,12 @@ function reportsTable() {
 }
 
 function contextDetails() {
-  if (!state.appContext) return `<p class="notice">Open this app as a Chatwoot Dashboard App to receive conversation, contact, and currentAgent context.</p>`;
+  if (!state.appContext) return `<p class="notice">${tr("Open this app as a Chatwoot Dashboard App to receive conversation, contact, and currentAgent context.")}</p>`;
   return `<pre>${escapeHtml(JSON.stringify(state.appContext, null, 2))}</pre>`;
 }
 
 function previewTable() {
-  if (!state.preview) return `<p class="notice">Preview first. The app will show exactly which conversations/customers are affected before it writes anything.</p>`;
+  if (!state.preview) return `<p class="notice">${tr("Preview first. The app will show exactly which conversations/customers are affected before it writes anything.")}</p>`;
   const warnings = (state.preview.warnings || []).map(item => `<p class="notice warn">${escapeHtml(item)}</p>`).join("");
   return `${warnings}${simpleTable(state.preview.items.slice(0, 100), ["type", "conversationId", "contactId", "contactName", "status", "assigneeName", "source"])}`;
 }
@@ -554,10 +766,10 @@ function embeddedBanner() {
     return `
       <section class="embed-banner connected">
         <div>
-          <strong>Running inside Chatwoot</strong>
-          <span>Agent: ${escapeHtml(agent?.name || "-")} - Contact: ${escapeHtml(contact?.name || "-")} - Conversation: ${conversation?.id || "-"}</span>
+          <strong>${tr("Running inside Chatwoot")}</strong>
+          <span>${tr("Agent")}: ${escapeHtml(agent?.name || "-")} - ${tr("contactName")}: ${escapeHtml(contact?.name || "-")} - ${tr("conversationId")}: ${conversation?.id || "-"}</span>
         </div>
-        <button class="button secondary" data-action="request-context">Refresh context</button>
+        <button class="button secondary" data-action="request-context">${tr("Refresh context")}</button>
       </section>
     `;
   }
@@ -565,10 +777,10 @@ function embeddedBanner() {
   return `
     <section class="embed-banner">
       <div>
-        <strong>Standalone mode</strong>
-        <span>It works from Railway now. To make it feel native in Chatwoot, add this URL as a Dashboard App.</span>
+        <strong>${tr("Standalone mode")}</strong>
+        <span>${tr("It works from Railway now. To make it feel native in Chatwoot, add this URL as a Dashboard App.")}</span>
       </div>
-      <button class="button secondary" data-open-tab="settings">Setup guide</button>
+      <button class="button secondary" data-open-tab="settings">${tr("Setup guide")}</button>
     </section>
   `;
 }
@@ -577,10 +789,10 @@ function workflowSteps() {
   const hasPreview = Boolean(state.preview?.count);
   return `
     <div class="workflow">
-      <span class="done">1. Action</span>
-      <span class="done">2. Filters</span>
-      <span class="${hasPreview ? "done" : ""}">3. Preview</span>
-      <span>4. Execute</span>
+      <span class="done">${tr("1. Action")}</span>
+      <span class="done">${tr("2. Filters")}</span>
+      <span class="${hasPreview ? "done" : ""}">${tr("3. Preview")}</span>
+      <span>${tr("4. Execute")}</span>
     </div>
   `;
 }
@@ -615,16 +827,16 @@ function actionForm(criteria) {
 
 function jobsTable() {
   return simpleTable(state.jobs, ["createdAt", "action", "total", "succeeded", "failed", "id"], row => (
-    `<a href="/api/jobs/${row.id}/export.csv">Download</a>`
+    `<a href="/api/jobs/${row.id}/export.csv">${tr("Download")}</a>`
   ));
 }
 
 function simpleTable(rows, keys, extraCell) {
-  if (!rows || rows.length === 0) return `<p class="notice">No rows yet.</p>`;
+  if (!rows || rows.length === 0) return `<p class="notice">${tr("No rows yet.")}</p>`;
   return `
     <div class="table-wrap">
       <table>
-        <thead><tr>${keys.map(key => `<th>${key}</th>`).join("")}${extraCell ? "<th>Export</th>" : ""}</tr></thead>
+        <thead><tr>${keys.map(key => `<th>${tr(key)}</th>`).join("")}${extraCell ? `<th>${tr("Exports")}</th>` : ""}</tr></thead>
         <tbody>
           ${rows.map(row => `<tr>${keys.map(key => `<td>${escapeHtml(readPath(row, key) ?? "")}</td>`).join("")}${extraCell ? `<td>${extraCell(row)}</td>` : ""}</tr>`).join("")}
         </tbody>
@@ -634,15 +846,16 @@ function simpleTable(rows, keys, extraCell) {
 }
 
 function stat(label, value) {
-  return `<section class="panel stat"><span>${label}</span><strong>${escapeHtml(value)}</strong></section>`;
+  return `<section class="panel stat"><span>${tr(label)}</span><strong>${escapeHtml(value)}</strong></section>`;
 }
 
 function inputField(id, label, defaultValue = "", type = "text") {
-  return `<label class="field" for="${id}"><span>${label}</span><input id="${id}" type="${type}" value="${escapeHtml(defaultValue)}"></label>`;
+  const translatedDefault = state.lang === "ar" ? tr(defaultValue) : defaultValue;
+  return `<label class="field" for="${id}"><span>${tr(label)}</span><input id="${id}" type="${type}" value="${escapeHtml(translatedDefault)}"></label>`;
 }
 
 function selectField(id, label, options, selected = "") {
-  return `<label class="field" for="${id}"><span>${label}</span><select id="${id}">${options.map(([value, text]) => `<option value="${value}" ${String(value) === String(selected || "") ? "selected" : ""}>${text}</option>`).join("")}</select></label>`;
+  return `<label class="field" for="${id}"><span>${tr(label)}</span><select id="${id}">${options.map(([value, text]) => `<option value="${value}" ${String(value) === String(selected || "") ? "selected" : ""}>${tr(text)}</option>`).join("")}</select></label>`;
 }
 
 function agentSelect(id, label, selected = "") {

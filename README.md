@@ -77,6 +77,8 @@ Use the `Actions` screen for daily work. It is designed as a three-step flow:
 
 When the app is opened inside Chatwoot as a Dashboard App, it switches to a compact embedded layout automatically: the large sidebar is hidden, tabs move to the top, and the current Chatwoot agent/contact/conversation context is shown in the banner.
 
+Use the language button in the top bar to switch between English and Arabic. Arabic mode is saved in the browser, switches the UI to right-to-left layout, and keeps the same bulk action workflow. You can also open the Arabic version directly with `?lang=ar`, for example `https://your-railway-url/?lang=ar`.
+
 For the customer transfer report, use the local action logs and bulk job CSV exports. Every transfer executed from the app records the actor, action, source owner/agent, target owner/agent, affected row, and job id.
 
 ## Notes
