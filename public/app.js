@@ -1,5 +1,5 @@
 const state = {
-  tab: "dashboard",
+  tab: "actions",
   connection: loadConnection(),
   agents: [],
   teams: [],
@@ -20,24 +20,53 @@ const state = {
 };
 
 const tabs = [
+  ["actions", "Actions"],
   ["dashboard", "Dashboard"],
-  ["bulk", "Bulk Reassignment"],
   ["campaigns", "Campaigns"],
-  ["audit", "Audit Log"],
+  ["audit", "Logs"],
   ["exports", "Exports"],
-  ["settings", "Settings"]
+  ["settings", "Setup"]
 ];
 
 const titles = {
-  dashboard: ["Dashboard", "Live counters, Chatwoot report snapshots, and dashboard-app context."],
-  bulk: ["Bulk Reassignment", "Transfer or unassign conversations and contact owners in controlled batches."],
+  actions: ["Actions", "Run bulk transfers safely in three steps: choose, preview, execute."],
+  dashboard: ["Dashboard", "Counters, report snapshots, and Chatwoot embedded context."],
   campaigns: ["Campaigns", "Track local campaigns and Chatwoot webhook reply signals."],
-  audit: ["Audit Log", "Local action history plus optional Enterprise audit fetch."],
+  audit: ["Logs", "Who did what, when, and which bulk job changed it."],
   exports: ["Exports", "Download CSV files for audit logs, campaigns, and bulk jobs."],
-  settings: ["Settings", "Configure the Chatwoot self-hosted instance connection."]
+  settings: ["Setup", "Connect this app to your self-hosted Chatwoot instance."]
+};
+
+const quickActions = {
+  assign_agent: {
+    label: "Transfer to agent",
+    shortLabel: "Agent",
+    description: "Move all selected conversations from one sales/agent to another.",
+    scope: "conversations"
+  },
+  unassign: {
+    label: "Remove assignee",
+    shortLabel: "Unassign",
+    description: "Take conversations away from an agent and return them to Unassigned.",
+    scope: "conversations"
+  },
+  assign_team: {
+    label: "Move to team",
+    shortLabel: "Team",
+    description: "Route a batch of conversations to a team queue.",
+    scope: "conversations"
+  },
+  contact_owner: {
+    label: "Transfer customer owner",
+    shortLabel: "Owner",
+    description: "Change the contact owner custom attribute, with optional conversation reassignment.",
+    scope: "contacts",
+    action: "assign_agent"
+  }
 };
 
 document.addEventListener("DOMContentLoaded", () => {
+  setEmbeddedMode();
   renderNav();
   bindDashboardAppContext();
   document.getElementById("refresh-button").addEventListener("click", refreshActiveTab);
@@ -46,15 +75,17 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 function renderNav() {
-  const nav = document.getElementById("nav");
-  nav.innerHTML = tabs.map(([id, label]) => (
-    `<button type="button" data-tab="${id}" class="${state.tab === id ? "active" : ""}">${label}</button>`
-  )).join("");
-  nav.querySelectorAll("button").forEach(button => {
-    button.addEventListener("click", () => {
-      state.tab = button.dataset.tab;
-      render();
-      refreshActiveTab();
+  const containers = [document.getElementById("nav"), document.getElementById("compact-nav")].filter(Boolean);
+  containers.forEach(nav => {
+    nav.innerHTML = tabs.map(([id, label]) => (
+      `<button type="button" data-tab="${id}" class="${state.tab === id ? "active" : ""}">${label}</button>`
+    )).join("");
+    nav.querySelectorAll("button").forEach(button => {
+      button.addEventListener("click", () => {
+        state.tab = button.dataset.tab;
+        render();
+        refreshActiveTab();
+      });
     });
   });
 }
@@ -69,13 +100,79 @@ function render() {
   renderContextBox();
 
   const view = document.getElementById("view");
+  if (state.tab === "actions") view.innerHTML = actionsView();
   if (state.tab === "dashboard") view.innerHTML = dashboardView();
-  if (state.tab === "bulk") view.innerHTML = bulkView();
   if (state.tab === "campaigns") view.innerHTML = campaignsView();
   if (state.tab === "audit") view.innerHTML = auditView();
   if (state.tab === "exports") view.innerHTML = exportsView();
   if (state.tab === "settings") view.innerHTML = settingsView();
   bindViewEvents();
+}
+
+function actionsView() {
+  const criteria = state.bulkCriteria;
+  const activePreset = criteria.scope === "contacts" ? "contact_owner" : criteria.action || "assign_agent";
+  return `
+    ${embeddedBanner()}
+    <div class="action-layout">
+      <section class="panel action-panel">
+        <div class="panel-header">
+          <div>
+            <h2>Quick actions</h2>
+            <p class="panel-note">Pick the job you want. Nothing is changed until you preview and confirm.</p>
+          </div>
+          <span class="pill ${hasConnection() ? "ok" : "warn"}">${hasConnection() ? "Connected" : "Needs setup"}</span>
+        </div>
+        <div class="panel-body">
+          <div class="action-cards">
+            ${Object.entries(quickActions).map(([id, action]) => `
+              <button class="action-card ${activePreset === id ? "active" : ""}" type="button" data-quick-action="${id}">
+                <span>${action.shortLabel}</span>
+                <strong>${action.label}</strong>
+                <small>${action.description}</small>
+              </button>
+            `).join("")}
+          </div>
+        </div>
+      </section>
+      <aside class="guide-panel">
+        <h2>How it works</h2>
+        <ol class="steps-list">
+          <li><strong>Choose action</strong><span>Select transfer, unassign, team routing, or contact owner transfer.</span></li>
+          <li><strong>Preview</strong><span>The app asks Chatwoot for matching conversations/customers and shows the exact rows.</span></li>
+          <li><strong>Execute</strong><span>Only after confirmation, it calls Chatwoot assignment/contact APIs and logs every row.</span></li>
+        </ol>
+        <p class="guide-note">For Chatwoot Dashboard App usage: add the Railway URL in Chatwoot Settings -> Integrations -> Dashboard Apps.</p>
+      </aside>
+    </div>
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header">
+        <div>
+          <h2>${quickActions[activePreset]?.label || "Bulk action"}</h2>
+          <p class="panel-note">${quickActions[activePreset]?.description || ""}</p>
+        </div>
+        <span class="pill neutral">${state.preview?.count ?? 0} previewed</span>
+      </div>
+      <div class="panel-body">
+        ${workflowSteps()}
+        ${actionForm(criteria)}
+        <div class="actions sticky-actions">
+          <button class="button" data-action="preview-bulk">Preview affected rows</button>
+          <button class="button danger" data-action="execute-bulk" ${state.preview?.count ? "" : "disabled"}>Execute confirmed action</button>
+        </div>
+      </div>
+    </section>
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header">
+        <div>
+          <h2>Preview before execution</h2>
+          <p class="panel-note">Review the first 100 affected rows. Export full results after execution.</p>
+        </div>
+        ${state.preview ? `<span class="pill warn">${state.preview.count} rows</span>` : ""}
+      </div>
+      <div class="panel-body">${previewTable()}</div>
+    </section>
+  `;
 }
 
 function dashboardView() {
@@ -101,38 +198,7 @@ function dashboardView() {
 }
 
 function bulkView() {
-  const criteria = state.bulkCriteria;
-  return `
-    <section class="panel">
-      <div class="panel-header">
-        <h2>Bulk Ownership Transfer</h2>
-        <span class="pill neutral">${state.preview?.count ?? 0} previewed</span>
-      </div>
-      <div class="panel-body">
-        <div class="form-grid">
-          ${selectField("scope", "Scope", [["conversations", "Conversations assigned to agent"], ["contacts", "Contacts by owner custom attribute"]], criteria.scope)}
-          ${selectField("status", "Conversation status", [["open", "Open"], ["pending", "Pending"], ["resolved", "Resolved"], ["snoozed", "Snoozed"], ["all", "All"]], criteria.status)}
-          ${agentSelect("fromAgentId", "From agent", criteria.fromAgentId)}
-          ${selectField("action", "Action", [["assign_agent", "Assign to agent"], ["assign_team", "Assign to team"], ["unassign", "Unassign"]], criteria.action)}
-          ${agentSelect("targetAgentId", "Target agent", criteria.targetAgentId)}
-          ${teamSelect("targetTeamId", "Target team", criteria.targetTeamId)}
-          ${inputField("ownerAttribute", "Contact owner attribute", criteria.ownerAttribute || "sales_owner_id")}
-          ${inputField("maxPages", "Max pages to scan", criteria.maxPages || "20", "number")}
-        </div>
-        <label class="field" style="margin-top:14px">
-          <span><input type="checkbox" id="includeContactConversations" ${criteria.includeContactConversations ? "checked" : ""}> Include matching contact conversations</span>
-        </label>
-        <div class="actions">
-          <button class="button" data-action="preview-bulk">Preview</button>
-          <button class="button danger" data-action="execute-bulk" ${state.preview?.count ? "" : "disabled"}>Execute bulk action</button>
-        </div>
-      </div>
-    </section>
-    <section class="panel" style="margin-top:16px">
-      <div class="panel-header"><h2>Preview</h2>${state.preview ? `<span class="pill warn">${state.preview.count} items</span>` : ""}</div>
-      <div class="panel-body">${previewTable()}</div>
-    </section>
-  `;
+  return actionsView();
 }
 
 function campaignsView() {
@@ -196,21 +262,39 @@ function exportsView() {
 
 function settingsView() {
   return `
-    <section class="panel">
-      <div class="panel-header"><h2>Connection</h2></div>
-      <div class="panel-body">
-        <div class="form-grid">
-          ${inputField("baseUrl", "Chatwoot base URL", state.connection.baseUrl || "https://chatwoot.example.com")}
-          ${inputField("accountId", "Account ID", state.connection.accountId || "1", "number")}
-          ${inputField("apiToken", "User access token", state.connection.apiToken || "", "password")}
-          ${inputField("operatorName", "Operator name", state.connection.operatorName || "Ops Admin")}
+    <div class="grid two">
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Chatwoot connection</h2>
+            <p class="panel-note">These values can also live in Railway environment variables.</p>
+          </div>
         </div>
-        <div class="actions">
-          <button class="button" data-action="save-settings">Save and test</button>
-          <button class="button secondary" data-action="clear-settings">Clear local settings</button>
+        <div class="panel-body">
+          <div class="form-grid">
+            ${inputField("baseUrl", "Chatwoot base URL", state.connection.baseUrl || "https://chatwoot.example.com")}
+            ${inputField("accountId", "Account ID", state.connection.accountId || "1", "number")}
+            ${inputField("apiToken", "User access token", state.connection.apiToken || "", "password")}
+            ${inputField("operatorName", "Operator name", state.connection.operatorName || "Ops Admin")}
+          </div>
+          <div class="actions">
+            <button class="button" data-action="save-settings">Save and test</button>
+            <button class="button secondary" data-action="clear-settings">Clear local settings</button>
+          </div>
         </div>
-      </div>
-    </section>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><h2>Add it inside Chatwoot</h2></div>
+        <div class="panel-body">
+          <ol class="steps-list compact">
+            <li><strong>Open Chatwoot</strong><span>Go to Settings -> Integrations -> Dashboard Apps.</span></li>
+            <li><strong>Add app URL</strong><span>Paste your Railway public URL, then save.</span></li>
+            <li><strong>Open any conversation</strong><span>A new tab appears in the conversation panel and sends context to this app.</span></li>
+          </ol>
+          <p class="notice">Keep <code>OPS_PASSWORD</code> enabled on Railway. Chatwoot will ask for the same username/password the first time the embedded tab opens.</p>
+        </div>
+      </section>
+    </div>
   `;
 }
 
@@ -229,6 +313,20 @@ function bindViewEvents() {
       if (action === "load-campaigns") return loadCampaigns();
       if (action === "load-webhooks") return loadWebhooks();
       if (action === "request-context") return requestDashboardContext();
+    });
+  });
+
+  document.querySelectorAll("[data-quick-action]").forEach(element => {
+    element.addEventListener("click", event => {
+      selectQuickAction(event.currentTarget.dataset.quickAction);
+    });
+  });
+
+  document.querySelectorAll("[data-open-tab]").forEach(element => {
+    element.addEventListener("click", event => {
+      state.tab = event.currentTarget.dataset.openTab;
+      render();
+      refreshActiveTab();
     });
   });
 }
@@ -251,6 +349,22 @@ async function refreshActiveTab() {
   if (state.tab === "audit") return loadAudit();
   if (state.tab === "campaigns") return Promise.all([loadCampaigns(), loadWebhooks()]);
   if (state.tab === "exports") return loadJobs();
+}
+
+function selectQuickAction(id) {
+  const preset = quickActions[id];
+  if (!preset) return;
+
+  state.preview = null;
+  state.bulkCriteria = {
+    ...state.bulkCriteria,
+    scope: preset.scope,
+    action: preset.action || id,
+    targetTeamId: id === "assign_team" ? state.bulkCriteria.targetTeamId : "",
+    targetAgentId: id === "assign_agent" || id === "contact_owner" ? state.bulkCriteria.targetAgentId : "",
+    includeContactConversations: id === "contact_owner" ? state.bulkCriteria.includeContactConversations : false
+  };
+  render();
 }
 
 async function loadReports() {
@@ -353,11 +467,15 @@ async function createCampaign() {
 }
 
 function getBulkCriteria() {
+  const scope = value("scope");
+  let action = value("action");
+  if (scope === "contacts" && action === "assign_team") action = "assign_agent";
+
   return {
-    scope: value("scope"),
+    scope,
     status: value("status"),
     fromAgentId: value("fromAgentId"),
-    action: value("action"),
+    action,
     targetAgentId: value("targetAgentId"),
     targetTeamId: value("targetTeamId"),
     ownerAttribute: value("ownerAttribute") || "sales_owner_id",
@@ -374,12 +492,21 @@ function bindDashboardAppContext() {
       const parsed = JSON.parse(event.data);
       if (parsed.event === "appContext") {
         state.appContext = parsed.data;
+        document.body.classList.add("embedded");
         renderContextBox();
       }
     } catch {
       // Ignore non-JSON dashboard messages.
     }
   });
+}
+
+function setEmbeddedMode() {
+  try {
+    document.body.classList.toggle("embedded", window.parent !== window);
+  } catch {
+    document.body.classList.add("embedded");
+  }
 }
 
 function requestDashboardContext() {
@@ -414,9 +541,76 @@ function contextDetails() {
 }
 
 function previewTable() {
-  if (!state.preview) return `<p class="notice">Run Preview to see affected conversations or contacts before any write action.</p>`;
+  if (!state.preview) return `<p class="notice">Preview first. The app will show exactly which conversations/customers are affected before it writes anything.</p>`;
   const warnings = (state.preview.warnings || []).map(item => `<p class="notice warn">${escapeHtml(item)}</p>`).join("");
   return `${warnings}${simpleTable(state.preview.items.slice(0, 100), ["type", "conversationId", "contactId", "contactName", "status", "assigneeName", "source"])}`;
+}
+
+function embeddedBanner() {
+  const agent = state.appContext?.currentAgent;
+  const contact = state.appContext?.contact;
+  const conversation = state.appContext?.conversation;
+  if (agent || contact || conversation) {
+    return `
+      <section class="embed-banner connected">
+        <div>
+          <strong>Running inside Chatwoot</strong>
+          <span>Agent: ${escapeHtml(agent?.name || "-")} - Contact: ${escapeHtml(contact?.name || "-")} - Conversation: ${conversation?.id || "-"}</span>
+        </div>
+        <button class="button secondary" data-action="request-context">Refresh context</button>
+      </section>
+    `;
+  }
+
+  return `
+    <section class="embed-banner">
+      <div>
+        <strong>Standalone mode</strong>
+        <span>It works from Railway now. To make it feel native in Chatwoot, add this URL as a Dashboard App.</span>
+      </div>
+      <button class="button secondary" data-open-tab="settings">Setup guide</button>
+    </section>
+  `;
+}
+
+function workflowSteps() {
+  const hasPreview = Boolean(state.preview?.count);
+  return `
+    <div class="workflow">
+      <span class="done">1. Action</span>
+      <span class="done">2. Filters</span>
+      <span class="${hasPreview ? "done" : ""}">3. Preview</span>
+      <span>4. Execute</span>
+    </div>
+  `;
+}
+
+function actionForm(criteria) {
+  const isContacts = criteria.scope === "contacts";
+  const action = isContacts && criteria.action === "assign_team" ? "assign_agent" : criteria.action;
+  const actionOptions = isContacts
+    ? [["assign_agent", "Transfer owner"], ["unassign", "Remove owner"]]
+    : [["assign_agent", "Transfer to agent"], ["assign_team", "Move to team"], ["unassign", "Remove assignee"]];
+  const isTeam = action === "assign_team";
+  const isUnassign = action === "unassign";
+  return `
+    <div class="form-grid action-form">
+      ${selectField("scope", "What should be changed?", [["conversations", "Conversations"], ["contacts", "Customer owner field"]], criteria.scope)}
+      ${selectField("status", "Conversation status", [["open", "Open"], ["pending", "Pending"], ["resolved", "Resolved"], ["snoozed", "Snoozed"], ["all", "All"]], criteria.status)}
+      ${agentSelect("fromAgentId", isContacts ? "Current owner / from sales" : "Current assignee", criteria.fromAgentId)}
+      ${selectField("action", "Action", actionOptions, action)}
+      ${!isUnassign && !isTeam ? agentSelect("targetAgentId", isContacts ? "New owner / to sales" : "New assignee", criteria.targetAgentId) : ""}
+      ${isTeam ? teamSelect("targetTeamId", "Target team", criteria.targetTeamId) : ""}
+      ${isContacts ? inputField("ownerAttribute", "Owner custom attribute", criteria.ownerAttribute || "sales_owner_id") : ""}
+      ${inputField("maxPages", "Safety limit: pages to scan", criteria.maxPages || "20", "number")}
+    </div>
+    ${isContacts ? `
+      <label class="field checkbox-field">
+        <span><input type="checkbox" id="includeContactConversations" ${criteria.includeContactConversations ? "checked" : ""}> Also reassign conversations for these customers</span>
+      </label>
+    ` : `<input type="checkbox" id="includeContactConversations" hidden ${criteria.includeContactConversations ? "checked" : ""}>`}
+    <p class="notice">Tip: start with Open conversations and a small page limit. After Preview looks correct, increase the limit and execute.</p>
+  `;
 }
 
 function jobsTable() {

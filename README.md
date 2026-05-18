@@ -67,6 +67,18 @@ https://your-ops-console.example.com/api/webhooks/chatwoot
 
 Subscribe at least to `message_created`, `message_updated`, `conversation_updated`, and `contact_updated`.
 
+## Operator flow
+
+Use the `Actions` screen for daily work. It is designed as a three-step flow:
+
+1. Pick the action: transfer to agent, remove assignee, move to team, or transfer customer owner.
+2. Choose filters: current agent/owner, status, target agent/team, and the scan safety limit.
+3. Preview affected rows, then execute only after the preview looks correct.
+
+When the app is opened inside Chatwoot as a Dashboard App, it switches to a compact embedded layout automatically: the large sidebar is hidden, tabs move to the top, and the current Chatwoot agent/contact/conversation context is shown in the banner.
+
+For the customer transfer report, use the local action logs and bulk job CSV exports. Every transfer executed from the app records the actor, action, source owner/agent, target owner/agent, affected row, and job id.
+
 ## Notes
 
 - Unassignment uses the standard assignments endpoint with `assignee_id: null`. Current Chatwoot source routes that through the assignment service and saves the conversation with no assignee.
