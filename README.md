@@ -38,7 +38,7 @@ npm start
 
 ## Railway
 
-Railway provides a `PORT` variable automatically, and the app listens on `0.0.0.0:$PORT` in production.
+Railway provides a `PORT` variable automatically, and the app listens on `0.0.0.0:$PORT` in production. Do not set `CHATWOOT_OPS_PORT` on Railway unless you also know how the service port is exposed.
 
 Set these Railway variables:
 

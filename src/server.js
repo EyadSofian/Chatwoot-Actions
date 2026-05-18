@@ -10,7 +10,7 @@ import { buildBulkPreview, executeBulkAction, getReportsSummary, makeClient, pro
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const publicDir = join(rootDir, "public");
 const cliPort = process.argv.find(arg => arg.startsWith("--port="))?.split("=")[1];
-const port = Number(cliPort || process.env.CHATWOOT_OPS_PORT || process.env.PORT || 3317);
+const port = Number(cliPort || process.env.PORT || process.env.CHATWOOT_OPS_PORT || 3317);
 const host = process.env.HOST || "0.0.0.0";
 
 const mimeTypes = {
@@ -23,6 +23,11 @@ const mimeTypes = {
 
 const server = createServer(async (req, res) => {
   try {
+    if (req.url?.startsWith("/api/health")) {
+      sendJson(res, 200, { ok: true, name: "chatwoot-ops-console" });
+      return;
+    }
+
     if (!isAuthorized(req)) {
       res.writeHead(401, {
         "www-authenticate": 'Basic realm="Chatwoot Ops Console"',
@@ -64,10 +69,6 @@ function isAuthorized(req) {
 
 async function route(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
-
-  if (url.pathname === "/api/health") {
-    return sendJson(res, 200, { ok: true, name: "chatwoot-ops-console" });
-  }
 
   if (req.method === "POST" && url.pathname === "/api/chatwoot/probe") {
     const body = await readJsonBody(req);
