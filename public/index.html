@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Chatwoot Ops Console</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">CW</span>
+          <div>
+            <strong>Ops Console</strong>
+            <span>Bulk control for Chatwoot</span>
+          </div>
+        </div>
+        <nav class="nav" id="nav"></nav>
+        <div class="context-box" id="dashboard-context"></div>
+      </aside>
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <h1 id="page-title">Dashboard</h1>
+            <p id="page-subtitle">Operational view for assignment, campaigns, audit, and exports.</p>
+          </div>
+          <div class="topbar-actions">
+            <span id="connection-state" class="pill neutral">Not connected</span>
+            <button id="refresh-button" class="button secondary" type="button">Refresh</button>
+          </div>
+        </header>
+        <section id="view"></section>
+      </main>
+    </div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
