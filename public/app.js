@@ -150,7 +150,11 @@ const translations = {
     "New assignee": "الموظف الجديد",
     "Target team": "الفريق المستهدف",
     "Owner custom attribute": "Custom attribute للمسؤول",
-    "Safety limit: pages to scan": "حد الأمان: عدد الصفحات للفحص",
+    "Search limit: Chatwoot API pages": "حد البحث: صفحات API من Chatwoot",
+    "Chatwoot sends results in pages. 20 means scan up to 20 API pages, then stop for safety. This does not execute anything.": "Chatwoot بيرجع النتائج على صفحات. رقم 20 يعني التطبيق يفحص لحد 20 صفحة API ثم يتوقف للأمان. ده لا ينفذ أي تعديل.",
+    "Conversation mode finds conversations assigned to the selected agent. Use this for moving chats from one employee to another.": "وضع المحادثات بيجيب المحادثات المعينة للموظف المختار. استخدمه لو عايز تنقل شاتات من موظف لموظف.",
+    "Customer owner mode only finds contacts that already have this custom attribute. If you never filled sales_owner_id, preview can be zero.": "وضع مسؤول العميل بيجيب العملاء اللي عندهم الـ custom attribute ده بالفعل. لو sales_owner_id مش متسجل قبل كده، المعاينة ممكن تطلع صفر.",
+    "No rows matched these filters. Try Status = All, remove the inbox filter, or confirm the current assignee/owner is correct.": "مفيش صفوف مطابقة للفلاتر دي. جرّب الحالة = الكل، أو شيل فلتر الإنبوكس، أو اتأكد إن الموظف/المسؤول الحالي صحيح.",
     "Also reassign conversations for these customers": "حوّل محادثات العملاء دول كمان",
     "Tip: start with Open conversations and a small page limit. After Preview looks correct, increase the limit and execute.": "نصيحة: ابدأ بالمحادثات المفتوحة وحد صفحات صغير. بعد ما المعاينة تبقى مظبوطة، زود الحد ونفذ.",
     "Select agent": "اختار موظف",
@@ -764,7 +768,10 @@ function contextDetails() {
 function previewTable() {
   if (!state.preview) return `<p class="notice">${tr("Preview first. The app will show exactly which conversations/customers are affected before it writes anything.")}</p>`;
   const warnings = (state.preview.warnings || []).map(item => `<p class="notice warn">${escapeHtml(item)}</p>`).join("");
-  return `${warnings}${simpleTable(state.preview.items.slice(0, 100), ["type", "conversationId", "inboxName", "inboxId", "contactId", "contactName", "status", "assigneeName", "source"])}`;
+  const emptyHint = state.preview.count === 0
+    ? `<p class="notice warn">${tr("No rows matched these filters. Try Status = All, remove the inbox filter, or confirm the current assignee/owner is correct.")}</p>`
+    : "";
+  return `${warnings}${emptyHint}${simpleTable(state.preview.items.slice(0, 100), ["type", "conversationId", "inboxName", "inboxId", "contactId", "contactName", "status", "assigneeName", "source"])}`;
 }
 
 function embeddedBanner() {
@@ -824,14 +831,15 @@ function actionForm(criteria) {
       ${!isUnassign && !isTeam ? agentSelect("targetAgentId", isContacts ? "New owner / to sales" : "New assignee", criteria.targetAgentId) : ""}
       ${isTeam ? teamSelect("targetTeamId", "Target team", criteria.targetTeamId) : ""}
       ${isContacts ? inputField("ownerAttribute", "Owner custom attribute", criteria.ownerAttribute || "sales_owner_id") : ""}
-      ${inputField("maxPages", "Safety limit: pages to scan", criteria.maxPages || "20", "number")}
+      ${inputField("maxPages", "Search limit: Chatwoot API pages", criteria.maxPages || "20", "number")}
     </div>
     ${isContacts ? `
       <label class="field checkbox-field">
         <span><input type="checkbox" id="includeContactConversations" ${criteria.includeContactConversations ? "checked" : ""}> ${tr("Also reassign conversations for these customers")}</span>
       </label>
     ` : `<input type="checkbox" id="includeContactConversations" hidden ${criteria.includeContactConversations ? "checked" : ""}>`}
-    <p class="notice">${tr("Tip: start with Open conversations and a small page limit. After Preview looks correct, increase the limit and execute.")}</p>
+    <p class="notice">${tr(isContacts ? "Customer owner mode only finds contacts that already have this custom attribute. If you never filled sales_owner_id, preview can be zero." : "Conversation mode finds conversations assigned to the selected agent. Use this for moving chats from one employee to another.")}</p>
+    <p class="notice">${tr("Chatwoot sends results in pages. 20 means scan up to 20 API pages, then stop for safety. This does not execute anything.")}</p>
   `;
 }
 
