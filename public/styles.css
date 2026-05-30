@@ -634,14 +634,6 @@ body.embedded .embed-banner {
   flex-direction: column;
 }
 
-[dir="rtl"] .brand,
-[dir="rtl"] .topbar-actions,
-[dir="rtl"] .actions,
-[dir="rtl"] .embed-banner,
-[dir="rtl"] .checkbox-field span {
-  flex-direction: row-reverse;
-}
-
 [dir="rtl"] .compact-nav {
   direction: rtl;
 }

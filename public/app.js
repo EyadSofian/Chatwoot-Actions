@@ -828,10 +828,10 @@ function actionForm(criteria) {
     </div>
     ${isContacts ? `
       <label class="field checkbox-field">
-        <span><input type="checkbox" id="includeContactConversations" ${criteria.includeContactConversations ? "checked" : ""}> Also reassign conversations for these customers</span>
+        <span><input type="checkbox" id="includeContactConversations" ${criteria.includeContactConversations ? "checked" : ""}> ${tr("Also reassign conversations for these customers")}</span>
       </label>
     ` : `<input type="checkbox" id="includeContactConversations" hidden ${criteria.includeContactConversations ? "checked" : ""}>`}
-    <p class="notice">Tip: start with Open conversations and a small page limit. After Preview looks correct, increase the limit and execute.</p>
+    <p class="notice">${tr("Tip: start with Open conversations and a small page limit. After Preview looks correct, increase the limit and execute.")}</p>
   `;
 }
 
