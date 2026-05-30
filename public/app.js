@@ -4,6 +4,7 @@ const state = {
   connection: loadConnection(),
   agents: [],
   teams: [],
+  inboxes: [],
   metrics: null,
   preview: null,
   jobs: [],
@@ -14,6 +15,7 @@ const state = {
   bulkCriteria: {
     scope: "conversations",
     status: "open",
+    inboxId: "",
     action: "assign_agent",
     ownerAttribute: "sales_owner_id",
     maxPages: 20
@@ -138,6 +140,8 @@ const translations = {
     "All": "الكل",
     "Current owner / from sales": "المسؤول الحالي / من سيلز",
     "Current assignee": "الموظف الحالي",
+    "Inbox": "الإنبوكس",
+    "All inboxes": "كل الإنبوكسات",
     "Action": "الإجراء",
     "Transfer owner": "تحويل المسؤول",
     "Remove owner": "إزالة المسؤول",
@@ -174,6 +178,8 @@ const translations = {
     "id": "الرقم",
     "type": "النوع",
     "conversationId": "رقم المحادثة",
+    "inboxId": "رقم الإنبوكس",
+    "inboxName": "اسم الإنبوكس",
     "contactId": "رقم العميل",
     "contactName": "اسم العميل",
     "status": "الحالة",
@@ -534,6 +540,7 @@ async function refreshBaseData() {
     const data = await api("/api/chatwoot/probe", { connection: state.connection });
     state.agents = data.agents || [];
     state.teams = data.teams || [];
+    state.inboxes = data.inboxes || [];
     state.metrics = { conversationMetrics: data.metrics };
     render();
   } catch (error) {
@@ -616,6 +623,7 @@ function clearSettings() {
   state.connection = {};
   state.agents = [];
   state.teams = [];
+  state.inboxes = [];
   state.metrics = null;
   render();
 }
@@ -671,6 +679,7 @@ function getBulkCriteria() {
   return {
     scope,
     status: value("status"),
+    inboxId: value("inboxId"),
     fromAgentId: value("fromAgentId"),
     action,
     targetAgentId: value("targetAgentId"),
@@ -755,7 +764,7 @@ function contextDetails() {
 function previewTable() {
   if (!state.preview) return `<p class="notice">${tr("Preview first. The app will show exactly which conversations/customers are affected before it writes anything.")}</p>`;
   const warnings = (state.preview.warnings || []).map(item => `<p class="notice warn">${escapeHtml(item)}</p>`).join("");
-  return `${warnings}${simpleTable(state.preview.items.slice(0, 100), ["type", "conversationId", "contactId", "contactName", "status", "assigneeName", "source"])}`;
+  return `${warnings}${simpleTable(state.preview.items.slice(0, 100), ["type", "conversationId", "inboxName", "inboxId", "contactId", "contactName", "status", "assigneeName", "source"])}`;
 }
 
 function embeddedBanner() {
@@ -809,6 +818,7 @@ function actionForm(criteria) {
     <div class="form-grid action-form">
       ${selectField("scope", "What should be changed?", [["conversations", "Conversations"], ["contacts", "Customer owner field"]], criteria.scope)}
       ${selectField("status", "Conversation status", [["open", "Open"], ["pending", "Pending"], ["resolved", "Resolved"], ["snoozed", "Snoozed"], ["all", "All"]], criteria.status)}
+      ${!isContacts ? inboxSelect("inboxId", "Inbox", criteria.inboxId) : ""}
       ${agentSelect("fromAgentId", isContacts ? "Current owner / from sales" : "Current assignee", criteria.fromAgentId)}
       ${selectField("action", "Action", actionOptions, action)}
       ${!isUnassign && !isTeam ? agentSelect("targetAgentId", isContacts ? "New owner / to sales" : "New assignee", criteria.targetAgentId) : ""}
@@ -865,6 +875,11 @@ function agentSelect(id, label, selected = "") {
 
 function teamSelect(id, label, selected = "") {
   const options = [["", "Select team"], ...state.teams.map(team => [team.id, team.name])];
+  return selectField(id, label, options, selected);
+}
+
+function inboxSelect(id, label, selected = "") {
+  const options = [["", "All inboxes"], ...state.inboxes.map(inbox => [inbox.id, `${inbox.name} (${inbox.channel_type || inbox.channelType || "inbox"})`])];
   return selectField(id, label, options, selected);
 }
 

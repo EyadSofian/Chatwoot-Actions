@@ -30,10 +30,13 @@ Sources:
 
 - Conversation list supports `assignee_type`, `status`, `q`, `inbox_id`, `team_id`, `labels`, and `page`.
 - Conversation filter supports a `payload` of attribute filters. The app tries this first for `assignee_id`, then falls back to paginated list filtering if the installed version behaves differently.
+- Inbox selection comes from `GET /api/v1/accounts/{account_id}/inboxes`, which returns a `payload` array with inbox `id`, `name`, and `channel_type`.
+- Bulk transfer can safely combine filters such as `assignee_id + inbox_id + status` before calling the assignment endpoint.
 
 Sources:
 - https://developers.chatwoot.com/api-reference/conversations/conversations-list
 - https://developers.chatwoot.com/api-reference/conversations/conversations-filter
+- https://chatwoot-447c5a93.mintlify.app/api-reference/inboxes/list-all-inboxes
 - https://raw.githubusercontent.com/chatwoot/chatwoot/develop/app/finders/conversation_finder.rb
 - https://raw.githubusercontent.com/chatwoot/chatwoot/develop/app/services/conversations/filter_service.rb
 

@@ -72,7 +72,7 @@ Subscribe at least to `message_created`, `message_updated`, `conversation_update
 Use the `Actions` screen for daily work. It is designed as a three-step flow:
 
 1. Pick the action: transfer to agent, remove assignee, move to team, or transfer customer owner.
-2. Choose filters: current agent/owner, status, target agent/team, and the scan safety limit.
+2. Choose filters: current agent/owner, inbox, status, target agent/team, and the scan safety limit.
 3. Preview affected rows, then execute only after the preview looks correct.
 
 When the app is opened inside Chatwoot as a Dashboard App, it switches to a compact embedded layout automatically: the large sidebar is hidden, tabs move to the top, and the current Chatwoot agent/contact/conversation context is shown in the banner.

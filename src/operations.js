@@ -9,17 +9,19 @@ export function makeClient(connection) {
 
 export async function probeChatwoot(connection) {
   const client = makeClient(connection);
-  const [agents, teams, metrics] = await Promise.allSettled([
+  const [agents, teams, inboxes, metrics] = await Promise.allSettled([
     client.listAgents(),
     client.listTeams(),
+    client.listInboxes(),
     client.conversationMetrics({ type: "account" })
   ]);
 
   return {
     agents: agents.status === "fulfilled" ? agents.value : [],
     teams: teams.status === "fulfilled" ? teams.value : [],
+    inboxes: inboxes.status === "fulfilled" ? getPayload(inboxes.value) : [],
     metrics: metrics.status === "fulfilled" ? metrics.value : null,
-    warnings: [agents, teams, metrics]
+    warnings: [agents, teams, inboxes, metrics]
       .filter(result => result.status === "rejected")
       .map(result => result.reason.message)
   };
@@ -41,7 +43,10 @@ export async function buildBulkPreview(connection, criteria = {}) {
       for (const contact of contacts.slice(0, Number(criteria.maxContactsForConversationLookup || 100))) {
         try {
           const response = await client.contactConversations(contact.id);
-          const conversations = getPayload(response).filter(conversation => matchesStatus(conversation, criteria.status));
+          const conversations = getPayload(response).filter(conversation => {
+            const matchesInbox = criteria.inboxId ? Number(conversation.inbox_id) === Number(criteria.inboxId) : true;
+            return matchesInbox && matchesStatus(conversation, criteria.status);
+          });
           for (const conversation of conversations) {
             items.push(conversationToPreviewItem(conversation, criteria, "contact_conversation"));
           }
@@ -266,6 +271,7 @@ function conversationToPreviewItem(conversation, criteria, source) {
   const sender = conversation?.meta?.sender || {};
   const assignee = conversation?.meta?.assignee || {};
   const team = conversation?.meta?.team || conversation?.team || {};
+  const inbox = conversation?.inbox || conversation?.meta?.inbox || {};
 
   return {
     type: "conversation",
@@ -273,6 +279,7 @@ function conversationToPreviewItem(conversation, criteria, source) {
     conversationId: conversation.id,
     status: conversation.status,
     inboxId: conversation.inbox_id,
+    inboxName: inbox.name || "",
     teamId: team.id || conversation.team_id || null,
     teamName: team.name || "",
     contactId: sender.id || conversation.contact_id || null,

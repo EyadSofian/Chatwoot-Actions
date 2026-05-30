@@ -139,6 +139,10 @@ export class ChatwootClient {
     return this.request(this.accountPath("/teams"));
   }
 
+  listInboxes() {
+    return this.request(this.accountPath("/inboxes"));
+  }
+
   listConversations(query = {}) {
     return this.request(this.accountPath("/conversations"), { query });
   }
