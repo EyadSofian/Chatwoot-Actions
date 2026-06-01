@@ -172,6 +172,8 @@ const translations = {
     "Open conversations": "المحادثات المفتوحة",
     "Assigned conversations": "محادثات معيّنة",
     "Unassigned conversations": "محادثات غير معيّنة",
+    "Unassigned by inbox": "غير المعيّن حسب الإنبوكس",
+    "Open conversations without an assignee, grouped by inbox.": "المحادثات المفتوحة بدون موظف، مجمعة حسب الإنبوكس.",
     "Inbox summary": "ملخص الإنبوكسات",
     "Agent summary": "ملخص الموظفين",
     "Open conversation list": "قائمة المحادثات المفتوحة",
@@ -443,8 +445,25 @@ function openReportView() {
 function openReportTables() {
   if (!state.openReport) return `<section class="panel" style="margin-top:16px"><div class="panel-body"><p class="notice">${tr("Run the report first.")}</p></div></section>`;
   const warnings = (state.openReport.warnings || []).map(item => `<p class="notice warn">${escapeHtml(item)}</p>`).join("");
+  const unassignedByInbox = state.openReport.inboxes
+    .map(row => ({
+      inboxName: row.inboxName,
+      inboxId: row.inboxId,
+      unassignedCount: row.unassignedCount,
+      openCount: row.openCount
+    }))
+    .sort((a, b) => Number(b.unassignedCount || 0) - Number(a.unassignedCount || 0) || String(a.inboxName).localeCompare(String(b.inboxName)));
   return `
     ${warnings}
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header">
+        <div>
+          <h2>${tr("Unassigned by inbox")}</h2>
+          <p class="panel-note">${tr("Open conversations without an assignee, grouped by inbox.")}</p>
+        </div>
+      </div>
+      <div class="panel-body">${simpleTable(unassignedByInbox, ["inboxName", "inboxId", "unassignedCount", "openCount"])}</div>
+    </section>
     <div class="grid two" style="margin-top:16px">
       <section class="panel">
         <div class="panel-header"><h2>${tr("Inbox summary")}</h2></div>
