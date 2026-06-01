@@ -149,6 +149,127 @@ export async function getReportsSummary(connection, query = {}) {
   return { since, until, reports, conversationMetrics };
 }
 
+export async function getOpenConversationReport(connection, criteria = {}) {
+  const client = makeClient(connection);
+  const maxPages = Number(criteria.maxPages || process.env.CHATWOOT_MAX_PAGES || 20);
+  const selectedInboxIds = normalizeIds(criteria.inboxIds);
+  const selectedAgentIds = normalizeIds(criteria.agentIds);
+  const warnings = [];
+
+  const [agentsResult, inboxesResult] = await Promise.allSettled([
+    client.listAgents(),
+    client.listInboxes()
+  ]);
+  const agents = agentsResult.status === "fulfilled" ? normalizeRows(agentsResult.value) : [];
+  const inboxes = inboxesResult.status === "fulfilled" ? getPayload(inboxesResult.value) : [];
+  if (agentsResult.status === "rejected") warnings.push(`Could not load agents: ${agentsResult.reason.message}`);
+  if (inboxesResult.status === "rejected") warnings.push(`Could not load inboxes: ${inboxesResult.reason.message}`);
+
+  const inboxLookup = new Map(inboxes.map(inbox => [String(inbox.id), inbox]));
+  const agentLookup = new Map(agents.map(agent => [String(agent.id), agent]));
+  const inboxesToScan = selectedInboxIds.length ? selectedInboxIds : [""];
+  const rows = [];
+  for (const inboxId of inboxesToScan) {
+    const conversations = await listConversationsByListEndpoint(client, {
+      status: "open",
+      inboxId,
+      assigneeType: "all"
+    }, maxPages);
+    rows.push(...conversations);
+  }
+
+  const conversations = dedupeBy(rows, item => item.id).map(conversation => {
+    const item = conversationToPreviewItem(conversation, criteria, "open_report");
+    const inbox = inboxLookup.get(String(item.inboxId));
+    const agent = agentLookup.get(String(item.assigneeId));
+    return {
+      ...item,
+      inboxName: item.inboxName || inbox?.name || "",
+      assigneeName: item.assigneeName || agent?.name || ""
+    };
+  });
+
+  const inboxCounts = new Map();
+  for (const item of conversations) {
+    const key = String(item.inboxId || "unknown");
+    const current = inboxCounts.get(key) || {
+      inboxId: item.inboxId || "",
+      inboxName: item.inboxName || inboxLookup.get(key)?.name || "Unknown inbox",
+      openCount: 0,
+      assignedCount: 0,
+      unassignedCount: 0
+    };
+    current.openCount += 1;
+    if (item.assigneeId) current.assignedCount += 1;
+    else current.unassignedCount += 1;
+    inboxCounts.set(key, current);
+  }
+
+  for (const inboxId of selectedInboxIds) {
+    const key = String(inboxId);
+    if (!inboxCounts.has(key)) {
+      const inbox = inboxLookup.get(key);
+      inboxCounts.set(key, {
+        inboxId,
+        inboxName: inbox?.name || `Inbox ${inboxId}`,
+        openCount: 0,
+        assignedCount: 0,
+        unassignedCount: 0
+      });
+    }
+  }
+
+  const agentCounts = new Map();
+  for (const item of conversations) {
+    if (!item.assigneeId) continue;
+    const key = String(item.assigneeId);
+    if (selectedAgentIds.length && !selectedAgentIds.includes(key)) continue;
+    const agent = agentLookup.get(key);
+    const current = agentCounts.get(key) || {
+      agentId: item.assigneeId,
+      agentName: item.assigneeName || agent?.name || `Agent ${item.assigneeId}`,
+      openCount: 0
+    };
+    current.openCount += 1;
+    agentCounts.set(key, current);
+  }
+
+  for (const agentId of selectedAgentIds) {
+    if (!agentCounts.has(agentId)) {
+      const agent = agentLookup.get(agentId);
+      agentCounts.set(agentId, {
+        agentId,
+        agentName: agent?.name || `Agent ${agentId}`,
+        openCount: 0
+      });
+    }
+  }
+
+  const unassigned = conversations.filter(item => !item.assigneeId);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    criteria: {
+      status: "open",
+      inboxIds: selectedInboxIds,
+      agentIds: selectedAgentIds,
+      maxPages
+    },
+    totals: {
+      openCount: conversations.length,
+      assignedCount: conversations.length - unassigned.length,
+      unassignedCount: unassigned.length,
+      inboxCount: inboxCounts.size,
+      agentCount: agentCounts.size
+    },
+    inboxes: [...inboxCounts.values()].sort((a, b) => b.openCount - a.openCount || String(a.inboxName).localeCompare(String(b.inboxName))),
+    agents: [...agentCounts.values()].sort((a, b) => b.openCount - a.openCount || String(a.agentName).localeCompare(String(b.agentName))),
+    unassigned,
+    conversations,
+    warnings
+  };
+}
+
 async function executeItem(client, criteria, item) {
   if (item.type === "contact") {
     return updateContactOwner(client, item, criteria);
@@ -317,6 +438,16 @@ function dedupeBy(rows, keyFn) {
   const map = new Map();
   for (const row of rows) map.set(keyFn(row), row);
   return [...map.values()];
+}
+
+function normalizeIds(values) {
+  return (Array.isArray(values) ? values : [values])
+    .filter(value => value !== undefined && value !== null && value !== "")
+    .map(value => String(value));
+}
+
+function normalizeRows(response) {
+  return Array.isArray(response) ? response : getPayload(response);
 }
 
 function redactCriteria(criteria) {

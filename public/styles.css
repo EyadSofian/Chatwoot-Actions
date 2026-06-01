@@ -565,6 +565,57 @@ th {
   min-height: 16px;
 }
 
+.check-panel {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  min-width: 0;
+}
+
+.check-header {
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.check-header strong,
+.check-header span {
+  display: block;
+}
+
+.check-header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.check-list {
+  max-height: 220px;
+  overflow: auto;
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 6px;
+  font-weight: 650;
+}
+
+.check-row:hover {
+  background: var(--surface-soft);
+}
+
+.check-row input {
+  width: 16px;
+  min-height: 16px;
+}
+
 .sticky-actions {
   padding-top: 14px;
   border-top: 1px solid var(--line);

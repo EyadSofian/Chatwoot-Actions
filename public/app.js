@@ -7,6 +7,7 @@ const state = {
   inboxes: [],
   metrics: null,
   preview: null,
+  openReport: null,
   jobs: [],
   audit: [],
   campaigns: [],
@@ -19,6 +20,11 @@ const state = {
     action: "assign_agent",
     ownerAttribute: "sales_owner_id",
     maxPages: 20
+  },
+  openReportCriteria: {
+    inboxIds: [],
+    agentIds: [],
+    maxPages: 20
   }
 };
 
@@ -26,12 +32,14 @@ const translations = {
   ar: {
     "Actions": "الإجراءات",
     "Dashboard": "لوحة المتابعة",
+    "Open Report": "تقرير المفتوح",
     "Campaigns": "الحملات",
     "Logs": "السجل",
     "Exports": "التصدير",
     "Setup": "الإعداد",
     "Run bulk transfers safely in three steps: choose, preview, execute.": "نفذ التحويلات الجماعية بأمان في ثلاث خطوات: اختار، راجع، نفذ.",
     "Counters, report snapshots, and Chatwoot embedded context.": "أرقام سريعة، تقارير، وسياق Chatwoot داخل التطبيق.",
+    "Open conversations by inbox, unassigned queue, and selected agents.": "المحادثات المفتوحة حسب الإنبوكس، وغير المعيّن، والموظفين المختارين.",
     "Track local campaigns and Chatwoot webhook reply signals.": "تابع الحملات المحلية وردود العملاء من Webhooks.",
     "Who did what, when, and which bulk job changed it.": "اعرف مين عمل إيه، إمتى، وأي عملية جماعية نفذتها.",
     "Download CSV files for audit logs, campaigns, and bulk jobs.": "حمل ملفات CSV للسجل والحملات والعمليات الجماعية.",
@@ -155,6 +163,24 @@ const translations = {
     "Conversation mode finds conversations assigned to the selected agent. Use this for moving chats from one employee to another.": "وضع المحادثات بيجيب المحادثات المعينة للموظف المختار. استخدمه لو عايز تنقل شاتات من موظف لموظف.",
     "Customer owner mode only finds contacts that already have this custom attribute. If you never filled sales_owner_id, preview can be zero.": "وضع مسؤول العميل بيجيب العملاء اللي عندهم الـ custom attribute ده بالفعل. لو sales_owner_id مش متسجل قبل كده، المعاينة ممكن تطلع صفر.",
     "No rows matched these filters. Try Status = All, remove the inbox filter, or confirm the current assignee/owner is correct.": "مفيش صفوف مطابقة للفلاتر دي. جرّب الحالة = الكل، أو شيل فلتر الإنبوكس، أو اتأكد إن الموظف/المسؤول الحالي صحيح.",
+    "Open conversation report": "تقرير المحادثات المفتوحة",
+    "This report does not change anything. It only reads open conversations from Chatwoot.": "التقرير ده لا يغير أي حاجة. هو يقرأ المحادثات المفتوحة فقط من Chatwoot.",
+    "Choose inboxes": "اختار الإنبوكسات",
+    "Choose agents": "اختار الموظفين",
+    "Leave empty to include all.": "سيبها فاضية عشان يشمل الكل.",
+    "Run open report": "تشغيل تقرير المفتوح",
+    "Open conversations": "المحادثات المفتوحة",
+    "Assigned conversations": "محادثات معيّنة",
+    "Unassigned conversations": "محادثات غير معيّنة",
+    "Inbox summary": "ملخص الإنبوكسات",
+    "Agent summary": "ملخص الموظفين",
+    "Open conversation list": "قائمة المحادثات المفتوحة",
+    "Run the report first.": "شغّل التقرير الأول.",
+    "openCount": "عدد المفتوح",
+    "assignedCount": "عدد المعيّن",
+    "unassignedCount": "عدد غير المعيّن",
+    "agentId": "رقم الموظف",
+    "agentName": "اسم الموظف",
     "Also reassign conversations for these customers": "حوّل محادثات العملاء دول كمان",
     "Tip: start with Open conversations and a small page limit. After Preview looks correct, increase the limit and execute.": "نصيحة: ابدأ بالمحادثات المفتوحة وحد صفحات صغير. بعد ما المعاينة تبقى مظبوطة، زود الحد ونفذ.",
     "Select agent": "اختار موظف",
@@ -198,6 +224,7 @@ const translations = {
 
 const tabs = [
   ["actions", "Actions"],
+  ["open_report", "Open Report"],
   ["dashboard", "Dashboard"],
   ["campaigns", "Campaigns"],
   ["audit", "Logs"],
@@ -207,6 +234,7 @@ const tabs = [
 
 const titles = {
   actions: ["Actions", "Run bulk transfers safely in three steps: choose, preview, execute."],
+  open_report: ["Open Report", "Open conversations by inbox, unassigned queue, and selected agents."],
   dashboard: ["Dashboard", "Counters, report snapshots, and Chatwoot embedded context."],
   campaigns: ["Campaigns", "Track local campaigns and Chatwoot webhook reply signals."],
   audit: ["Logs", "Who did what, when, and which bulk job changed it."],
@@ -280,6 +308,7 @@ function render() {
 
   const view = document.getElementById("view");
   if (state.tab === "actions") view.innerHTML = actionsView();
+  if (state.tab === "open_report") view.innerHTML = openReportView();
   if (state.tab === "dashboard") view.innerHTML = dashboardView();
   if (state.tab === "campaigns") view.innerHTML = campaignsView();
   if (state.tab === "audit") view.innerHTML = auditView();
@@ -373,6 +402,67 @@ function dashboardView() {
         <div class="panel-body">${contextDetails()}</div>
       </section>
     </div>
+  `;
+}
+
+function openReportView() {
+  const report = state.openReport;
+  const totals = report?.totals || {};
+  return `
+    ${embeddedBanner()}
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>${tr("Open conversation report")}</h2>
+          <p class="panel-note">${tr("This report does not change anything. It only reads open conversations from Chatwoot.")}</p>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="grid two">
+          ${checkboxGroup("reportInboxIds", "Choose inboxes", state.inboxes.map(inbox => [inbox.id, `${inbox.name} (${inbox.channel_type || inbox.channelType || "inbox"})`]), state.openReportCriteria.inboxIds)}
+          ${checkboxGroup("reportAgentIds", "Choose agents", state.agents.map(agent => [agent.id, `${agent.name} (${agent.email})`]), state.openReportCriteria.agentIds)}
+        </div>
+        <div class="form-grid" style="margin-top:14px">
+          ${inputField("reportMaxPages", "Search limit: Chatwoot API pages", state.openReportCriteria.maxPages || "20", "number")}
+        </div>
+        <p class="notice">${tr("Leave empty to include all.")} ${tr("Chatwoot sends results in pages. 20 means scan up to 20 API pages, then stop for safety. This does not execute anything.")}</p>
+        <div class="actions">
+          <button class="button" data-action="load-open-report">${tr("Run open report")}</button>
+        </div>
+      </div>
+    </section>
+    <div class="grid three" style="margin-top:16px">
+      ${stat("Open conversations", totals.openCount ?? "-")}
+      ${stat("Assigned conversations", totals.assignedCount ?? "-")}
+      ${stat("Unassigned conversations", totals.unassignedCount ?? "-")}
+    </div>
+    ${openReportTables()}
+  `;
+}
+
+function openReportTables() {
+  if (!state.openReport) return `<section class="panel" style="margin-top:16px"><div class="panel-body"><p class="notice">${tr("Run the report first.")}</p></div></section>`;
+  const warnings = (state.openReport.warnings || []).map(item => `<p class="notice warn">${escapeHtml(item)}</p>`).join("");
+  return `
+    ${warnings}
+    <div class="grid two" style="margin-top:16px">
+      <section class="panel">
+        <div class="panel-header"><h2>${tr("Inbox summary")}</h2></div>
+        <div class="panel-body">${simpleTable(state.openReport.inboxes, ["inboxName", "inboxId", "openCount", "assignedCount", "unassignedCount"])}</div>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><h2>${tr("Agent summary")}</h2></div>
+        <div class="panel-body">${simpleTable(state.openReport.agents, ["agentName", "agentId", "openCount"])}</div>
+      </section>
+    </div>
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>${tr("Unassigned conversations")}</h2></div>
+      <div class="panel-body">${simpleTable(state.openReport.unassigned.slice(0, 200), ["conversationId", "inboxName", "contactName", "status", "source"])}</div>
+    </section>
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>${tr("Open conversation list")}</h2></div>
+      <div class="panel-body">${simpleTable(state.openReport.conversations.slice(0, 200), ["conversationId", "inboxName", "contactName", "assigneeName", "status", "source"])}</div>
+    </section>
   `;
 }
 
@@ -513,6 +603,7 @@ function bindViewEvents() {
       if (action === "clear-settings") return clearSettings();
       if (action === "preview-bulk") return previewBulk();
       if (action === "execute-bulk") return executeBulk();
+      if (action === "load-open-report") return loadOpenReport();
       if (action === "load-reports") return loadReports();
       if (action === "load-audit") return loadAudit();
       if (action === "fetch-chatwoot-audit") return fetchChatwootAudit();
@@ -553,6 +644,7 @@ async function refreshBaseData() {
 }
 
 async function refreshActiveTab() {
+  if (state.tab === "open_report") return loadOpenReport();
   if (state.tab === "dashboard") return loadReports();
   if (state.tab === "audit") return loadAudit();
   if (state.tab === "campaigns") return Promise.all([loadCampaigns(), loadWebhooks()]);
@@ -579,6 +671,21 @@ async function loadReports() {
   if (!hasConnection()) return notify(tr("Save Chatwoot connection first."), "warn");
   const data = await api("/api/reports/summary", { connection: state.connection });
   state.metrics = data;
+  render();
+}
+
+async function loadOpenReport() {
+  if (!hasConnection()) return notify(tr("Save Chatwoot connection first."), "warn");
+  const criteria = {
+    inboxIds: checkedValues("reportInboxIds"),
+    agentIds: checkedValues("reportAgentIds"),
+    maxPages: Number(value("reportMaxPages") || 20)
+  };
+  state.openReportCriteria = criteria;
+  state.openReport = await api("/api/conversations/open-report", {
+    connection: state.connection,
+    criteria
+  });
   render();
 }
 
@@ -867,6 +974,27 @@ function stat(label, value) {
   return `<section class="panel stat"><span>${tr(label)}</span><strong>${escapeHtml(value)}</strong></section>`;
 }
 
+function checkboxGroup(name, label, options, selected = []) {
+  const selectedSet = new Set((selected || []).map(String));
+  const rows = options.length
+    ? options.map(([value, text]) => `
+      <label class="check-row">
+        <input type="checkbox" name="${name}" value="${escapeHtml(value)}" ${selectedSet.has(String(value)) ? "checked" : ""}>
+        <span>${escapeHtml(text)}</span>
+      </label>
+    `).join("")
+    : `<p class="notice">${tr("No rows yet.")}</p>`;
+  return `
+    <section class="check-panel">
+      <div class="check-header">
+        <strong>${tr(label)}</strong>
+        <span>${tr("Leave empty to include all.")}</span>
+      </div>
+      <div class="check-list">${rows}</div>
+    </section>
+  `;
+}
+
 function inputField(id, label, defaultValue = "", type = "text") {
   const translatedDefault = state.lang === "ar" ? tr(defaultValue) : defaultValue;
   return `<label class="field" for="${id}"><span>${tr(label)}</span><input id="${id}" type="${type}" value="${escapeHtml(translatedDefault)}"></label>`;
@@ -923,6 +1051,10 @@ function hasConnection() {
 
 function value(id) {
   return document.getElementById(id)?.value || "";
+}
+
+function checkedValues(name) {
+  return [...document.querySelectorAll(`input[name="${name}"]:checked`)].map(input => input.value);
 }
 
 function readPath(row, path) {

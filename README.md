@@ -5,6 +5,7 @@ Small self-hosted companion app for Chatwoot operations:
 - Bulk transfer conversations from one agent to another.
 - Bulk assign conversations to a team.
 - Bulk unassign conversations from an agent.
+- Report open conversations by selected inbox, unassigned queue, and selected agents.
 - Transfer contact ownership via a configurable contact custom attribute such as `sales_owner_id`.
 - Preview every affected row before writing.
 - Store a local audit log for every action made through this app.
@@ -80,6 +81,8 @@ When the app is opened inside Chatwoot as a Dashboard App, it switches to a comp
 Use the language button in the top bar to switch between English and Arabic. Arabic mode is saved in the browser, switches the UI to right-to-left layout, and keeps the same bulk action workflow. You can also open the Arabic version directly with `?lang=ar`, for example `https://your-railway-url/?lang=ar`.
 
 For the customer transfer report, use the local action logs and bulk job CSV exports. Every transfer executed from the app records the actor, action, source owner/agent, target owner/agent, affected row, and job id.
+
+Use the `Open Report` screen when you only need visibility, not a write action. It can show open conversation counts per selected inbox, unassigned open conversations, and open conversation counts for selected agents.
 
 ## Notes
 

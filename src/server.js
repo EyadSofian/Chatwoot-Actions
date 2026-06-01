@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { appendAudit, appendWebhookEvent, createCampaign, readCollection, updateCampaignFromWebhook } from "./store.js";
 import { toCsv } from "./exporters.js";
-import { buildBulkPreview, executeBulkAction, getReportsSummary, makeClient, probeChatwoot } from "./operations.js";
+import { buildBulkPreview, executeBulkAction, getOpenConversationReport, getReportsSummary, makeClient, probeChatwoot } from "./operations.js";
 
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const publicDir = join(rootDir, "public");
@@ -88,6 +88,11 @@ async function route(req, res) {
   if (req.method === "POST" && url.pathname === "/api/reports/summary") {
     const body = await readJsonBody(req);
     return sendJson(res, 200, await getReportsSummary(body.connection, body.query));
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/conversations/open-report") {
+    const body = await readJsonBody(req);
+    return sendJson(res, 200, await getOpenConversationReport(body.connection, body.criteria));
   }
 
   if (req.method === "POST" && url.pathname === "/api/chatwoot/audit") {
