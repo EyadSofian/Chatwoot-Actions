@@ -13,6 +13,7 @@ import {
   getOpenConversationReport,
   getReportsSummary,
   makeClient,
+  parsePhoneAssignInput,
   probeChatwoot
 } from "./operations.js";
 
@@ -97,6 +98,11 @@ async function route(req, res) {
   if (req.method === "POST" && url.pathname === "/api/phone-assign/preview") {
     const body = await readJsonBody(req);
     return sendJson(res, 200, await buildPhoneAssignPreview(body.connection, body.criteria));
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/phone-assign/parse") {
+    const body = await readJsonBody(req);
+    return sendJson(res, 200, await parsePhoneAssignInput(body.criteria));
   }
 
   if (req.method === "POST" && url.pathname === "/api/phone-assign/execute") {

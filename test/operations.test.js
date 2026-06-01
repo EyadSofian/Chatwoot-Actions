@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { buildPhoneAssignPreview, extractPhoneNumbers, normalizePhone } from "../src/operations.js";
+import { buildPhoneAssignPreview, extractPhoneNumbers, normalizePhone, parsePhoneAssignInput } from "../src/operations.js";
 
 test("normalizePhone removes formatting and international prefix", () => {
   assert.equal(normalizePhone("+966 55 826 2332"), "966558262332");
@@ -25,7 +25,7 @@ test("extractPhoneNumbers reads mixed CSV-style content and deduplicates", () =>
 test("buildPhoneAssignPreview matches phone contacts and conversations", async () => {
   const server = createServer((req, res) => {
     res.setHeader("content-type", "application/json; charset=utf-8");
-    if (req.url.startsWith("/api/v1/accounts/1/contacts?")) {
+    if (req.url.startsWith("/api/v1/accounts/1/contacts/search?")) {
       res.end(JSON.stringify({
         payload: [{ id: 10, name: "Ahmed", phone_number: "+966558262332" }]
       }));
@@ -75,4 +75,13 @@ test("buildPhoneAssignPreview matches phone contacts and conversations", async (
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
+});
+
+test("parsePhoneAssignInput returns a quick file count without Chatwoot", async () => {
+  const parsed = await parsePhoneAssignInput({
+    rawText: "Name,Phone\nAhmed,966558262332\nSara,+966 56 696 9482"
+  });
+
+  assert.equal(parsed.phoneCount, 2);
+  assert.equal(parsed.sample[0].normalizedPhone, "966558262332");
 });

@@ -8,6 +8,8 @@ const state = {
   metrics: null,
   preview: null,
   phonePreview: null,
+  phoneParse: null,
+  loadingAction: "",
   openReport: null,
   jobs: [],
   audit: [],
@@ -34,7 +36,7 @@ const state = {
     status: "open",
     inboxId: "",
     targetAgentId: "",
-    maxPhones: 2000
+    maxPhones: 100
   }
 };
 
@@ -200,10 +202,15 @@ const translations = {
     "No file selected.": "لم يتم اختيار ملف.",
     "Phone scan limit": "حد فحص الأرقام",
     "Preview phone matches": "معاينة الأرقام المطابقة",
+    "Previewing...": "جاري المعاينة...",
     "Execute phone assignment": "تنفيذ تعيين الأرقام",
     "Matched conversations": "المحادثات المطابقة",
     "Numbers not ready": "أرقام غير جاهزة",
     "The app searches Chatwoot contacts by phone, then assigns the matching conversations only. Nothing changes before execution.": "التطبيق يبحث عن العميل في Chatwoot بالرقم، ثم يعيّن المحادثات المطابقة فقط. لا يحدث أي تعديل قبل التنفيذ.",
+    "This inbox is a source filter for existing conversations, not a destination. If a number has no conversation/contact in these filters, it will appear under Numbers not ready.": "الإنبوكس هنا فلتر للمحادثات الموجودة، مش وجهة نقل. لو الرقم ملوش محادثة/عميل مطابق في الفلاتر دي هيظهر تحت أرقام غير جاهزة.",
+    "File read: {count} phone number(s) found.": "تمت قراءة الملف: اتلاقى {count} رقم.",
+    "Could not read phone numbers from this file.": "لم أقدر أقرأ أرقام من الملف ده.",
+    "Only the first {count} numbers will be checked in this preview. Increase it after the first preview looks correct.": "هيتم فحص أول {count} رقم فقط في المعاينة دي. زوّد الرقم بعد ما أول معاينة تبقى مظبوطة.",
     "Add a CSV/XLSX file or paste phone numbers first.": "ارفع ملف CSV/XLSX أو الصق الأرقام الأول.",
     "Choose the target agent first.": "اختار الموظف المستهدف الأول.",
     "Phone preview finished: {matched}/{phones} phone(s) matched.": "انتهت المعاينة: {matched}/{phones} رقم له محادثات مطابقة.",
@@ -537,6 +544,8 @@ function openReportTables() {
 function phoneAssignView() {
   const criteria = state.phoneAssign;
   const preview = state.phonePreview;
+  const parse = state.phoneParse;
+  const isPreviewing = state.loadingAction === "preview-phone-assign";
   return `
     ${embeddedBanner()}
     <section class="panel">
@@ -552,7 +561,7 @@ function phoneAssignView() {
           ${agentSelect("phoneTargetAgentId", "Target assignee", criteria.targetAgentId)}
           ${selectField("phoneStatus", "Conversation status", [["open", "Open"], ["pending", "Pending"], ["resolved", "Resolved"], ["snoozed", "Snoozed"], ["all", "All"]], criteria.status)}
           ${inboxSelect("phoneInboxId", "Inbox", criteria.inboxId)}
-          ${inputField("phoneMaxPhones", "Phone scan limit", criteria.maxPhones || "2000", "number")}
+          ${inputField("phoneMaxPhones", "Phone scan limit", criteria.maxPhones || "100", "number")}
         </div>
         <label class="field span-all" for="phoneNumbersRaw">
           <span>${tr("Phone numbers / CSV content")}</span>
@@ -569,14 +578,17 @@ function phoneAssignView() {
           </div>
         </div>
         <p class="notice">${tr("The app searches Chatwoot contacts by phone, then assigns the matching conversations only. Nothing changes before execution.")}</p>
+        <p class="notice">${tr("This inbox is a source filter for existing conversations, not a destination. If a number has no conversation/contact in these filters, it will appear under Numbers not ready.")}</p>
+        ${parse?.phoneCount ? `<p class="notice ok-note">${tr("File read: {count} phone number(s) found.", { count: parse.phoneCount })}</p>` : ""}
+        <p class="notice warn">${tr("Only the first {count} numbers will be checked in this preview. Increase it after the first preview looks correct.", { count: criteria.maxPhones || 100 })}</p>
         <div class="actions sticky-actions">
-          <button class="button" data-action="preview-phone-assign">${tr("Preview phone matches")}</button>
-          <button class="button danger" data-action="execute-phone-assign" ${preview?.count ? "" : "disabled"}>${tr("Execute phone assignment")}</button>
+          <button class="button" data-action="preview-phone-assign" ${isPreviewing ? "disabled" : ""}>${tr(isPreviewing ? "Previewing..." : "Preview phone matches")}</button>
+          <button class="button danger" data-action="execute-phone-assign" ${preview?.count && !isPreviewing ? "" : "disabled"}>${tr("Execute phone assignment")}</button>
         </div>
       </div>
     </section>
     <div class="grid three" style="margin-top:16px">
-      ${stat("phoneCount", preview?.phoneCount ?? "-")}
+      ${stat("phoneCount", preview?.phoneCount ?? parse?.phoneCount ?? "-")}
       ${stat("matchedPhoneCount", preview?.matchedPhoneCount ?? "-")}
       ${stat("Matched conversations", preview?.count ?? "-")}
     </div>
@@ -745,20 +757,17 @@ function bindViewEvents() {
   document.querySelectorAll("[data-action]").forEach(element => {
     element.addEventListener("click", async event => {
       const action = event.currentTarget.dataset.action;
-      if (action === "save-settings") return saveSettings();
-      if (action === "clear-settings") return clearSettings();
-      if (action === "preview-bulk") return previewBulk();
-      if (action === "execute-bulk") return executeBulk();
-      if (action === "load-open-report") return loadOpenReport();
-      if (action === "preview-phone-assign") return previewPhoneAssign();
-      if (action === "execute-phone-assign") return executePhoneAssign();
-      if (action === "load-reports") return loadReports();
-      if (action === "load-audit") return loadAudit();
-      if (action === "fetch-chatwoot-audit") return fetchChatwootAudit();
-      if (action === "create-campaign") return createCampaign();
-      if (action === "load-campaigns") return loadCampaigns();
-      if (action === "load-webhooks") return loadWebhooks();
-      if (action === "request-context") return requestDashboardContext();
+      let caughtError = null;
+      try {
+        await runAction(action);
+      } catch (error) {
+        caughtError = error;
+      } finally {
+        const hadLoadingAction = Boolean(state.loadingAction);
+        state.loadingAction = "";
+        if (hadLoadingAction) render();
+      }
+      if (caughtError) notify(caughtError.message || "Request failed", "bad");
     });
   });
 
@@ -780,6 +789,8 @@ function bindViewEvents() {
   if (phoneRaw) {
     phoneRaw.addEventListener("input", event => {
       state.phoneAssign.rawText = event.currentTarget.value;
+      state.phoneParse = null;
+      state.phonePreview = null;
     });
   }
 
@@ -787,6 +798,23 @@ function bindViewEvents() {
   if (phoneFile) {
     phoneFile.addEventListener("change", event => handlePhoneFile(event.currentTarget.files?.[0]));
   }
+}
+
+async function runAction(action) {
+  if (action === "save-settings") return saveSettings();
+  if (action === "clear-settings") return clearSettings();
+  if (action === "preview-bulk") return previewBulk();
+  if (action === "execute-bulk") return executeBulk();
+  if (action === "load-open-report") return loadOpenReport();
+  if (action === "preview-phone-assign") return previewPhoneAssign();
+  if (action === "execute-phone-assign") return executePhoneAssign();
+  if (action === "load-reports") return loadReports();
+  if (action === "load-audit") return loadAudit();
+  if (action === "fetch-chatwoot-audit") return fetchChatwootAudit();
+  if (action === "create-campaign") return createCampaign();
+  if (action === "load-campaigns") return loadCampaigns();
+  if (action === "load-webhooks") return loadWebhooks();
+  if (action === "request-context") return requestDashboardContext();
 }
 
 async function refreshBaseData() {
@@ -858,8 +886,25 @@ async function handlePhoneFile(file) {
     state.phoneAssign.rawText = await file.text();
   }
   state.phonePreview = null;
+  state.phoneParse = null;
   render();
-  notify(tr("File loaded. Preview to check Chatwoot matches."), "ok");
+  try {
+    state.phoneParse = await parsePhoneAssignInput();
+    render();
+    notify(tr("File read: {count} phone number(s) found.", { count: state.phoneParse.phoneCount || 0 }), state.phoneParse.phoneCount ? "ok" : "warn");
+  } catch {
+    notify(tr("Could not read phone numbers from this file."), "bad");
+  }
+}
+
+async function parsePhoneAssignInput() {
+  return api("/api/phone-assign/parse", {
+    criteria: {
+      rawText: state.phoneAssign.rawText || "",
+      fileName: state.phoneAssign.fileName || "",
+      fileBase64: state.phoneAssign.fileBase64 || ""
+    }
+  });
 }
 
 async function previewPhoneAssign() {
@@ -871,13 +916,19 @@ async function previewPhoneAssign() {
   if (!criteria.targetAgentId) return notify(tr("Choose the target agent first."), "warn");
   if (!criteria.rawText.trim() && !criteria.fileBase64) return notify(tr("Add a CSV/XLSX file or paste phone numbers first."), "warn");
 
+  if (!state.phoneParse) {
+    state.phoneParse = await parsePhoneAssignInput();
+  }
+  state.loadingAction = "preview-phone-assign";
+  render();
   const data = await api("/api/phone-assign/preview", { connection: state.connection, criteria });
   state.phonePreview = data;
+  state.loadingAction = "";
+  render();
   notify(tr("Phone preview finished: {matched}/{phones} phone(s) matched.", {
     matched: data.matchedPhoneCount || 0,
     phones: data.phoneCount || 0
   }), data.count ? "ok" : "warn");
-  render();
 }
 
 async function executePhoneAssign() {

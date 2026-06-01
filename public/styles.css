@@ -359,6 +359,11 @@ th {
   color: #7a530a;
 }
 
+.notice.ok-note {
+  background: #e9f8f0;
+  color: #0b704a;
+}
+
 .file-status {
   min-height: 64px;
   border: 1px solid var(--line);

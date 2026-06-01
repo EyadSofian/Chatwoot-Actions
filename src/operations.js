@@ -116,7 +116,7 @@ export async function executeBulkAction(connection, criteria = {}, items = [], a
 }
 
 export async function buildPhoneAssignPreview(connection, criteria = {}) {
-  const maxPhones = Math.max(1, Number(criteria.maxPhones || 2000));
+  const maxPhones = Math.max(1, Number(criteria.maxPhones || 100));
   const warnings = [];
 
   if (!criteria.targetAgentId) {
@@ -150,11 +150,21 @@ export async function buildPhoneAssignPreview(connection, criteria = {}) {
   return {
     criteria: redactCriteria({ ...criteria, phoneCount: entriesToCheck.length }),
     phoneCount: entriesToCheck.length,
+    totalPhoneCount: phoneEntries.length,
     matchedPhoneCount: new Set(items.map(item => item.normalizedPhone)).size,
     count: items.length,
     items,
     misses,
     warnings
+  };
+}
+
+export async function parsePhoneAssignInput(criteria = {}) {
+  const phoneEntries = await parsePhoneEntries(criteria);
+  return {
+    fileName: criteria.fileName || "",
+    phoneCount: phoneEntries.length,
+    sample: phoneEntries.slice(0, 20)
   };
 }
 
@@ -459,7 +469,12 @@ export function normalizePhone(value) {
 async function searchContactsByPhone(client, normalizedPhone) {
   const contacts = [];
   for (const term of phoneSearchTerms(normalizedPhone)) {
-    const response = await client.listContacts({ q: term, page: 1 });
+    let response;
+    try {
+      response = await client.searchContacts({ q: term, page: 1 });
+    } catch {
+      response = await client.listContacts({ q: term, page: 1 });
+    }
     contacts.push(...normalizeRows(response));
     if (contacts.some(contact => contactMatchesPhone(contact, normalizedPhone))) break;
   }

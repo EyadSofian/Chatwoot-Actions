@@ -85,7 +85,7 @@ For the customer transfer report, use the local action logs and bulk job CSV exp
 
 Use the `Open Report` screen when you only need visibility, not a write action. It can show open conversation counts per selected inbox, unassigned open conversations, and open conversation counts for selected agents.
 
-Use the `Phone Assign` screen when you receive a list like `Contact Name, Phone, Salesperson`. Paste the CSV content or upload `.csv`, `.txt`, or `.xlsx`, choose the target agent, preview matches, then execute. The app searches Chatwoot contacts by phone number, filters their conversations by status/inbox, and only assigns the conversations shown in the preview.
+Use the `Phone Assign` screen when you receive a list like `Contact Name, Phone, Salesperson`. Paste the CSV content or upload `.csv`, `.txt`, or `.xlsx`, choose the target agent, preview matches, then execute. The app first reads the file and shows how many phone numbers were found, then searches Chatwoot contacts by phone number, filters their conversations by status/inbox, and only assigns the conversations shown in the preview. The inbox field is a source filter for existing conversations; it does not move a conversation to another inbox.
 
 ## Notes
 

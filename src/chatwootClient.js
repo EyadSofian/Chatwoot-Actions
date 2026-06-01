@@ -173,6 +173,10 @@ export class ChatwootClient {
     return this.request(this.accountPath("/contacts"), { query });
   }
 
+  searchContacts(query = {}) {
+    return this.request(this.accountPath("/contacts/search"), { query });
+  }
+
   updateContact(contactId, payload) {
     return this.request(this.accountPath(`/contacts/${contactId}`), {
       method: "PUT",
