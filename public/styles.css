@@ -222,6 +222,10 @@ body {
   gap: 14px;
 }
 
+.span-all {
+  margin-top: 14px;
+}
+
 .field {
   display: grid;
   gap: 6px;
@@ -353,6 +357,27 @@ th {
 .notice.warn {
   background: #fff7df;
   color: #7a530a;
+}
+
+.file-status {
+  min-height: 64px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  background: #f7fafc;
+}
+
+.file-status span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.file-status strong {
+  overflow-wrap: anywhere;
 }
 
 .split-actions {

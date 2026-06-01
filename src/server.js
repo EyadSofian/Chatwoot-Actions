@@ -5,7 +5,16 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { appendAudit, appendWebhookEvent, createCampaign, readCollection, updateCampaignFromWebhook } from "./store.js";
 import { toCsv } from "./exporters.js";
-import { buildBulkPreview, executeBulkAction, getOpenConversationReport, getReportsSummary, makeClient, probeChatwoot } from "./operations.js";
+import {
+  buildBulkPreview,
+  buildPhoneAssignPreview,
+  executeBulkAction,
+  executePhoneAssign,
+  getOpenConversationReport,
+  getReportsSummary,
+  makeClient,
+  probeChatwoot
+} from "./operations.js";
 
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const publicDir = join(rootDir, "public");
@@ -83,6 +92,16 @@ async function route(req, res) {
   if (req.method === "POST" && url.pathname === "/api/bulk/execute") {
     const body = await readJsonBody(req);
     return sendJson(res, 200, await executeBulkAction(body.connection, body.criteria, body.items, body.actor));
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/phone-assign/preview") {
+    const body = await readJsonBody(req);
+    return sendJson(res, 200, await buildPhoneAssignPreview(body.connection, body.criteria));
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/phone-assign/execute") {
+    const body = await readJsonBody(req);
+    return sendJson(res, 200, await executePhoneAssign(body.connection, body.criteria, body.items, body.actor));
   }
 
   if (req.method === "POST" && url.pathname === "/api/reports/summary") {

@@ -5,6 +5,7 @@ Small self-hosted companion app for Chatwoot operations:
 - Bulk transfer conversations from one agent to another.
 - Bulk assign conversations to a team.
 - Bulk unassign conversations from an agent.
+- Assign conversations from a pasted phone list, CSV, or XLSX file.
 - Report open conversations by selected inbox, unassigned queue, and selected agents.
 - Transfer contact ownership via a configurable contact custom attribute such as `sales_owner_id`.
 - Preview every affected row before writing.
@@ -83,6 +84,8 @@ Use the language button in the top bar to switch between English and Arabic. Ara
 For the customer transfer report, use the local action logs and bulk job CSV exports. Every transfer executed from the app records the actor, action, source owner/agent, target owner/agent, affected row, and job id.
 
 Use the `Open Report` screen when you only need visibility, not a write action. It can show open conversation counts per selected inbox, unassigned open conversations, and open conversation counts for selected agents.
+
+Use the `Phone Assign` screen when you receive a list like `Contact Name, Phone, Salesperson`. Paste the CSV content or upload `.csv`, `.txt`, or `.xlsx`, choose the target agent, preview matches, then execute. The app searches Chatwoot contacts by phone number, filters their conversations by status/inbox, and only assigns the conversations shown in the preview.
 
 ## Notes
 

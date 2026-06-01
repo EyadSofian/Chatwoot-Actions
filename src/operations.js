@@ -115,6 +115,100 @@ export async function executeBulkAction(connection, criteria = {}, items = [], a
   return job;
 }
 
+export async function buildPhoneAssignPreview(connection, criteria = {}) {
+  const maxPhones = Math.max(1, Number(criteria.maxPhones || 2000));
+  const warnings = [];
+
+  if (!criteria.targetAgentId) {
+    throwValidationError("Choose the target agent before preview.");
+  }
+
+  const phoneEntries = await parsePhoneEntries(criteria);
+
+  if (phoneEntries.length === 0) {
+    throwValidationError("No phone numbers were found. Paste numbers or upload a CSV/XLSX file.");
+  }
+
+  if (phoneEntries.length > maxPhones) {
+    warnings.push(`Only the first ${maxPhones} phone numbers were checked for safety.`);
+  }
+
+  const entriesToCheck = phoneEntries.slice(0, maxPhones);
+  const client = makeClient(connection);
+  const checked = await mapLimit(entriesToCheck, Number(criteria.lookupConcurrency || 4), entry => (
+    buildPhonePreviewRows(client, entry, criteria)
+  ));
+
+  const items = [];
+  const misses = [];
+  for (const result of checked) {
+    items.push(...result.items);
+    misses.push(...result.misses);
+    warnings.push(...result.warnings);
+  }
+
+  return {
+    criteria: redactCriteria({ ...criteria, phoneCount: entriesToCheck.length }),
+    phoneCount: entriesToCheck.length,
+    matchedPhoneCount: new Set(items.map(item => item.normalizedPhone)).size,
+    count: items.length,
+    items,
+    misses,
+    warnings
+  };
+}
+
+export async function executePhoneAssign(connection, criteria = {}, items = [], actor = {}) {
+  if (!criteria.targetAgentId) {
+    throwValidationError("Choose the target agent before execution.");
+  }
+
+  const client = makeClient(connection);
+  const results = [];
+  const startedAt = new Date().toISOString();
+
+  for (const item of items) {
+    try {
+      if (!item.conversationId) throw new Error("Missing conversation id");
+      const result = await client.assignConversation(item.conversationId, {
+        assignee_id: Number(criteria.targetAgentId)
+      });
+      results.push({ ...item, ok: true, result });
+    } catch (error) {
+      results.push({ ...item, ok: false, error: error.message });
+    }
+  }
+
+  const succeeded = results.filter(item => item.ok).length;
+  const failed = results.length - succeeded;
+  const job = await saveJob({
+    action: "phone_assign",
+    criteria: redactCriteria(criteria),
+    actor,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    total: results.length,
+    succeeded,
+    failed,
+    results
+  });
+
+  await appendAudit({
+    action: "bulk_phone_assign",
+    actor,
+    summary: `phone_assign completed: ${succeeded}/${results.length} succeeded`,
+    metadata: {
+      jobId: job.id,
+      total: results.length,
+      succeeded,
+      failed,
+      criteria: redactCriteria(criteria)
+    }
+  });
+
+  return job;
+}
+
 export async function getReportsSummary(connection, query = {}) {
   const client = makeClient(connection);
   const now = Math.floor(Date.now() / 1000);
@@ -270,6 +364,177 @@ export async function getOpenConversationReport(connection, criteria = {}) {
   };
 }
 
+async function buildPhonePreviewRows(client, entry, criteria) {
+  const warnings = [];
+  const misses = [];
+  const items = [];
+
+  try {
+    const contacts = await searchContactsByPhone(client, entry.normalizedPhone);
+    if (contacts.length === 0) {
+      misses.push(phoneMiss(entry, "Contact not found"));
+      return { items, misses, warnings };
+    }
+
+    const match = chooseContactByPhone(contacts, entry.normalizedPhone);
+    if (match.warning) warnings.push(match.warning);
+
+    const response = await client.contactConversations(match.contact.id);
+    const conversations = getPayload(response).filter(conversation => {
+      const matchesInbox = criteria.inboxId ? Number(getConversationInboxId(conversation)) === Number(criteria.inboxId) : true;
+      return matchesInbox && matchesStatus(conversation, criteria.status || "open");
+    });
+
+    if (conversations.length === 0) {
+      misses.push(phoneMiss(entry, "No matching conversation", match.contact));
+      return { items, misses, warnings };
+    }
+
+    for (const conversation of conversations) {
+      items.push({
+        ...conversationToPreviewItem(conversation, criteria, "phone_list"),
+        inputPhone: entry.inputPhone,
+        normalizedPhone: entry.normalizedPhone,
+        targetAgentId: criteria.targetAgentId,
+        matchStatus: match.matchStatus,
+        contactSearchMatches: contacts.length
+      });
+    }
+  } catch (error) {
+    misses.push(phoneMiss(entry, error.message));
+  }
+
+  return { items, misses, warnings };
+}
+
+async function parsePhoneEntries(criteria) {
+  const parts = [];
+  if (criteria.rawText) parts.push(String(criteria.rawText));
+
+  if (criteria.fileBase64) {
+    const fileName = String(criteria.fileName || "");
+    const buffer = Buffer.from(String(criteria.fileBase64), "base64");
+    if (isSpreadsheetFile(fileName)) {
+      parts.push(await spreadsheetBufferToText(buffer));
+    } else {
+      parts.push(buffer.toString("utf8").replace(/^\uFEFF/, ""));
+    }
+  }
+
+  return extractPhoneNumbers(parts.join("\n"));
+}
+
+async function spreadsheetBufferToText(buffer) {
+  const { readSheet } = await import("read-excel-file/node");
+  const rows = await readSheet(buffer);
+  return rows.map(row => row.map(cell => cell ?? "").join(",")).join("\n");
+}
+
+function isSpreadsheetFile(fileName) {
+  return /\.xlsx$/i.test(fileName);
+}
+
+export function extractPhoneNumbers(text) {
+  const rows = [];
+  const seen = new Set();
+  const pattern = /(?:\+|00)?\d[\d\s().-]{6,}\d/g;
+
+  for (const match of String(text || "").matchAll(pattern)) {
+    const inputPhone = match[0].trim();
+    const normalizedPhone = normalizePhone(inputPhone);
+    if (!isLikelyPhone(normalizedPhone) || seen.has(normalizedPhone)) continue;
+    seen.add(normalizedPhone);
+    rows.push({ inputPhone, normalizedPhone });
+  }
+
+  return rows;
+}
+
+export function normalizePhone(value) {
+  let digits = String(value || "").replace(/[^\d]/g, "");
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  return digits;
+}
+
+async function searchContactsByPhone(client, normalizedPhone) {
+  const contacts = [];
+  for (const term of phoneSearchTerms(normalizedPhone)) {
+    const response = await client.listContacts({ q: term, page: 1 });
+    contacts.push(...normalizeRows(response));
+    if (contacts.some(contact => contactMatchesPhone(contact, normalizedPhone))) break;
+  }
+  return dedupeBy(contacts, contact => contact.id);
+}
+
+function phoneSearchTerms(normalizedPhone) {
+  const terms = [normalizedPhone, `+${normalizedPhone}`];
+  if (normalizedPhone.startsWith("966") && normalizedPhone.length > 3) {
+    terms.push(`0${normalizedPhone.slice(3)}`);
+  }
+  if (normalizedPhone.length > 10) terms.push(normalizedPhone.slice(-10));
+  if (normalizedPhone.length > 9) terms.push(normalizedPhone.slice(-9));
+  return [...new Set(terms.filter(Boolean))];
+}
+
+function chooseContactByPhone(contacts, normalizedPhone) {
+  const exact = contacts.find(contact => contactPhoneValues(contact).some(value => normalizePhone(value) === normalizedPhone));
+  if (exact) return { contact: exact, matchStatus: "Exact phone" };
+
+  const tail = contacts.find(contact => contactMatchesPhone(contact, normalizedPhone));
+  if (tail) return { contact: tail, matchStatus: "Phone tail match" };
+
+  const contact = contacts[0];
+  return {
+    contact,
+    matchStatus: "Search match",
+    warning: `Phone ${normalizedPhone} matched contact ${contact.id} by search, not by exact phone.`
+  };
+}
+
+function contactMatchesPhone(contact, normalizedPhone) {
+  return contactPhoneValues(contact).some(value => phonesMatch(value, normalizedPhone));
+}
+
+function contactPhoneValues(contact) {
+  const additional = contact?.additional_attributes || {};
+  const custom = contact?.custom_attributes || {};
+  return [
+    contact?.phone_number,
+    contact?.identifier,
+    additional.phone,
+    additional.phone_number,
+    additional.whatsapp,
+    custom.phone,
+    custom.phone_number,
+    custom.whatsapp
+  ].filter(Boolean);
+}
+
+function phonesMatch(left, right) {
+  const a = normalizePhone(left);
+  const b = normalizePhone(right);
+  if (!isLikelyPhone(a) || !isLikelyPhone(b)) return false;
+  if (a === b) return true;
+
+  const tailLength = Math.min(10, a.length, b.length);
+  return tailLength >= 8 && a.slice(-tailLength) === b.slice(-tailLength);
+}
+
+function isLikelyPhone(phone) {
+  return /^\d{8,16}$/.test(phone);
+}
+
+function phoneMiss(entry, reason, contact = null) {
+  return {
+    inputPhone: entry.inputPhone,
+    normalizedPhone: entry.normalizedPhone,
+    reason,
+    contactId: contact?.id || "",
+    contactName: contact?.name || "",
+    phoneNumber: contact?.phone_number || ""
+  };
+}
+
 async function executeItem(client, criteria, item) {
   if (item.type === "contact") {
     return updateContactOwner(client, item, criteria);
@@ -393,13 +658,14 @@ function conversationToPreviewItem(conversation, criteria, source) {
   const assignee = conversation?.meta?.assignee || {};
   const team = conversation?.meta?.team || conversation?.team || {};
   const inbox = conversation?.inbox || conversation?.meta?.inbox || {};
+  const inboxId = getConversationInboxId(conversation);
 
   return {
     type: "conversation",
     source,
     conversationId: conversation.id,
     status: conversation.status,
-    inboxId: conversation.inbox_id,
+    inboxId,
     inboxName: inbox.name || "",
     teamId: team.id || conversation.team_id || null,
     teamName: team.name || "",
@@ -411,6 +677,10 @@ function conversationToPreviewItem(conversation, criteria, source) {
     targetAgentId: criteria.targetAgentId || null,
     targetTeamId: criteria.targetTeamId || null
   };
+}
+
+function getConversationInboxId(conversation) {
+  return conversation?.inbox_id || conversation?.inbox?.id || conversation?.meta?.inbox?.id || null;
 }
 
 function contactToPreviewItem(contact, criteria) {
@@ -450,8 +720,33 @@ function normalizeRows(response) {
   return Array.isArray(response) ? response : getPayload(response);
 }
 
+async function mapLimit(rows, limit, worker) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 1, 8));
+  const results = new Array(rows.length);
+  let nextIndex = 0;
+
+  async function runWorker() {
+    while (nextIndex < rows.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await worker(rows[currentIndex], currentIndex);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(safeLimit, rows.length) }, runWorker));
+  return results;
+}
+
+function throwValidationError(message) {
+  const error = new Error(message);
+  error.status = 400;
+  throw error;
+}
+
 function redactCriteria(criteria) {
   const clone = { ...criteria };
   delete clone.apiToken;
+  delete clone.rawText;
+  delete clone.fileBase64;
   return clone;
 }

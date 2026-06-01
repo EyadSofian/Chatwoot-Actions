@@ -7,6 +7,7 @@ const state = {
   inboxes: [],
   metrics: null,
   preview: null,
+  phonePreview: null,
   openReport: null,
   jobs: [],
   audit: [],
@@ -25,6 +26,15 @@ const state = {
     inboxIds: [],
     agentIds: [],
     maxPages: 20
+  },
+  phoneAssign: {
+    rawText: "",
+    fileName: "",
+    fileBase64: "",
+    status: "open",
+    inboxId: "",
+    targetAgentId: "",
+    maxPhones: 2000
   }
 };
 
@@ -33,6 +43,7 @@ const translations = {
     "Actions": "الإجراءات",
     "Dashboard": "لوحة المتابعة",
     "Open Report": "تقرير المفتوح",
+    "Phone Assign": "تعيين بالأرقام",
     "Campaigns": "الحملات",
     "Logs": "السجل",
     "Exports": "التصدير",
@@ -40,6 +51,7 @@ const translations = {
     "Run bulk transfers safely in three steps: choose, preview, execute.": "نفذ التحويلات الجماعية بأمان في ثلاث خطوات: اختار، راجع، نفذ.",
     "Counters, report snapshots, and Chatwoot embedded context.": "أرقام سريعة، تقارير، وسياق Chatwoot داخل التطبيق.",
     "Open conversations by inbox, unassigned queue, and selected agents.": "المحادثات المفتوحة حسب الإنبوكس، وغير المعيّن، والموظفين المختارين.",
+    "Assign open conversations by uploaded or pasted phone numbers.": "عيّن المحادثات المفتوحة من ملف أرقام أو لصق مباشر.",
     "Track local campaigns and Chatwoot webhook reply signals.": "تابع الحملات المحلية وردود العملاء من Webhooks.",
     "Who did what, when, and which bulk job changed it.": "اعرف مين عمل إيه، إمتى، وأي عملية جماعية نفذتها.",
     "Download CSV files for audit logs, campaigns, and bulk jobs.": "حمل ملفات CSV للسجل والحملات والعمليات الجماعية.",
@@ -178,6 +190,40 @@ const translations = {
     "Agent summary": "ملخص الموظفين",
     "Open conversation list": "قائمة المحادثات المفتوحة",
     "Run the report first.": "شغّل التقرير الأول.",
+    "Assign from phone list": "تعيين من قائمة أرقام",
+    "Paste numbers or upload CSV/XLSX, choose the employee, preview, then execute.": "الصق الأرقام أو ارفع CSV/XLSX، اختار الموظف، راجع، ثم نفذ.",
+    "Target assignee": "الموظف المستهدف",
+    "Phone numbers / CSV content": "الأرقام / محتوى CSV",
+    "Paste one phone per line, or paste the CSV content with columns like Contact Name, Phone, Salesperson.": "الصق رقم في كل سطر، أو الصق محتوى CSV بأعمدة مثل Contact Name, Phone, Salesperson.",
+    "Upload CSV or XLSX": "رفع CSV أو XLSX",
+    "Selected file": "الملف المختار",
+    "No file selected.": "لم يتم اختيار ملف.",
+    "Phone scan limit": "حد فحص الأرقام",
+    "Preview phone matches": "معاينة الأرقام المطابقة",
+    "Execute phone assignment": "تنفيذ تعيين الأرقام",
+    "Matched conversations": "المحادثات المطابقة",
+    "Numbers not ready": "أرقام غير جاهزة",
+    "The app searches Chatwoot contacts by phone, then assigns the matching conversations only. Nothing changes before execution.": "التطبيق يبحث عن العميل في Chatwoot بالرقم، ثم يعيّن المحادثات المطابقة فقط. لا يحدث أي تعديل قبل التنفيذ.",
+    "Add a CSV/XLSX file or paste phone numbers first.": "ارفع ملف CSV/XLSX أو الصق الأرقام الأول.",
+    "Choose the target agent first.": "اختار الموظف المستهدف الأول.",
+    "Phone preview finished: {matched}/{phones} phone(s) matched.": "انتهت المعاينة: {matched}/{phones} رقم له محادثات مطابقة.",
+    "Phone assignment finished: {succeeded}/{total} succeeded.": "انتهى تعيين الأرقام: {succeeded}/{total} نجحت.",
+    "Execute assignment for {count} conversation(s)?": "تنفذ التعيين على {count} محادثة؟",
+    "File loaded. Preview to check Chatwoot matches.": "تم تحميل الملف. اعمل معاينة عشان تتأكد من المطابقات في Chatwoot.",
+    "Contact not found": "العميل غير موجود",
+    "No matching conversation": "لا توجد محادثة مطابقة",
+    "Exact phone": "تطابق رقم كامل",
+    "Phone tail match": "تطابق آخر الرقم",
+    "Search match": "تطابق من البحث",
+    "phoneCount": "عدد الأرقام",
+    "matchedPhoneCount": "أرقام مطابقة",
+    "inputPhone": "الرقم في الملف",
+    "normalizedPhone": "الرقم بعد التنظيف",
+    "targetAgentId": "الموظف المستهدف",
+    "matchStatus": "نوع التطابق",
+    "contactSearchMatches": "نتائج بحث العميل",
+    "reason": "السبب",
+    "phoneNumber": "رقم العميل",
     "openCount": "عدد المفتوح",
     "assignedCount": "عدد المعيّن",
     "unassignedCount": "عدد غير المعيّن",
@@ -227,6 +273,7 @@ const translations = {
 const tabs = [
   ["actions", "Actions"],
   ["open_report", "Open Report"],
+  ["phone_assign", "Phone Assign"],
   ["dashboard", "Dashboard"],
   ["campaigns", "Campaigns"],
   ["audit", "Logs"],
@@ -237,6 +284,7 @@ const tabs = [
 const titles = {
   actions: ["Actions", "Run bulk transfers safely in three steps: choose, preview, execute."],
   open_report: ["Open Report", "Open conversations by inbox, unassigned queue, and selected agents."],
+  phone_assign: ["Phone Assign", "Assign open conversations by uploaded or pasted phone numbers."],
   dashboard: ["Dashboard", "Counters, report snapshots, and Chatwoot embedded context."],
   campaigns: ["Campaigns", "Track local campaigns and Chatwoot webhook reply signals."],
   audit: ["Logs", "Who did what, when, and which bulk job changed it."],
@@ -311,6 +359,7 @@ function render() {
   const view = document.getElementById("view");
   if (state.tab === "actions") view.innerHTML = actionsView();
   if (state.tab === "open_report") view.innerHTML = openReportView();
+  if (state.tab === "phone_assign") view.innerHTML = phoneAssignView();
   if (state.tab === "dashboard") view.innerHTML = dashboardView();
   if (state.tab === "campaigns") view.innerHTML = campaignsView();
   if (state.tab === "audit") view.innerHTML = auditView();
@@ -485,6 +534,84 @@ function openReportTables() {
   `;
 }
 
+function phoneAssignView() {
+  const criteria = state.phoneAssign;
+  const preview = state.phonePreview;
+  return `
+    ${embeddedBanner()}
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>${tr("Assign from phone list")}</h2>
+          <p class="panel-note">${tr("Paste numbers or upload CSV/XLSX, choose the employee, preview, then execute.")}</p>
+        </div>
+        <span class="pill neutral">${preview?.count ?? 0} ${tr("previewed")}</span>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+          ${agentSelect("phoneTargetAgentId", "Target assignee", criteria.targetAgentId)}
+          ${selectField("phoneStatus", "Conversation status", [["open", "Open"], ["pending", "Pending"], ["resolved", "Resolved"], ["snoozed", "Snoozed"], ["all", "All"]], criteria.status)}
+          ${inboxSelect("phoneInboxId", "Inbox", criteria.inboxId)}
+          ${inputField("phoneMaxPhones", "Phone scan limit", criteria.maxPhones || "2000", "number")}
+        </div>
+        <label class="field span-all" for="phoneNumbersRaw">
+          <span>${tr("Phone numbers / CSV content")}</span>
+          <textarea id="phoneNumbersRaw" rows="8" placeholder="${tr("Paste one phone per line, or paste the CSV content with columns like Contact Name, Phone, Salesperson.")}">${escapeHtml(criteria.rawText || "")}</textarea>
+        </label>
+        <div class="form-grid">
+          <label class="field" for="phoneFile">
+            <span>${tr("Upload CSV or XLSX")}</span>
+            <input id="phoneFile" type="file" accept=".csv,.txt,.xlsx">
+          </label>
+          <div class="file-status">
+            <span>${tr("Selected file")}</span>
+            <strong>${criteria.fileName ? escapeHtml(criteria.fileName) : tr("No file selected.")}</strong>
+          </div>
+        </div>
+        <p class="notice">${tr("The app searches Chatwoot contacts by phone, then assigns the matching conversations only. Nothing changes before execution.")}</p>
+        <div class="actions sticky-actions">
+          <button class="button" data-action="preview-phone-assign">${tr("Preview phone matches")}</button>
+          <button class="button danger" data-action="execute-phone-assign" ${preview?.count ? "" : "disabled"}>${tr("Execute phone assignment")}</button>
+        </div>
+      </div>
+    </section>
+    <div class="grid three" style="margin-top:16px">
+      ${stat("phoneCount", preview?.phoneCount ?? "-")}
+      ${stat("matchedPhoneCount", preview?.matchedPhoneCount ?? "-")}
+      ${stat("Matched conversations", preview?.count ?? "-")}
+    </div>
+    ${phonePreviewTables()}
+  `;
+}
+
+function phonePreviewTables() {
+  if (!state.phonePreview) {
+    return `<section class="panel" style="margin-top:16px"><div class="panel-body"><p class="notice">${tr("Preview first. The app will show exactly which conversations/customers are affected before it writes anything.")}</p></div></section>`;
+  }
+  const warnings = (state.phonePreview.warnings || []).map(item => `<p class="notice warn">${escapeHtml(item)}</p>`).join("");
+  const matchedRows = state.phonePreview.items.slice(0, 150).map(localizePhoneRow);
+  const missedRows = (state.phonePreview.misses || []).slice(0, 150).map(localizePhoneRow);
+  return `
+    ${warnings}
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>${tr("Matched conversations")}</h2></div>
+      <div class="panel-body">${simpleTable(matchedRows, ["inputPhone", "conversationId", "inboxName", "contactName", "status", "assigneeName", "targetAgentId", "matchStatus"])}</div>
+    </section>
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>${tr("Numbers not ready")}</h2></div>
+      <div class="panel-body">${simpleTable(missedRows, ["inputPhone", "normalizedPhone", "reason", "contactId", "contactName", "phoneNumber"])}</div>
+    </section>
+  `;
+}
+
+function localizePhoneRow(row) {
+  return {
+    ...row,
+    matchStatus: row.matchStatus ? tr(row.matchStatus) : "",
+    reason: row.reason ? tr(row.reason) : ""
+  };
+}
+
 function bulkView() {
   return actionsView();
 }
@@ -623,6 +750,8 @@ function bindViewEvents() {
       if (action === "preview-bulk") return previewBulk();
       if (action === "execute-bulk") return executeBulk();
       if (action === "load-open-report") return loadOpenReport();
+      if (action === "preview-phone-assign") return previewPhoneAssign();
+      if (action === "execute-phone-assign") return executePhoneAssign();
       if (action === "load-reports") return loadReports();
       if (action === "load-audit") return loadAudit();
       if (action === "fetch-chatwoot-audit") return fetchChatwootAudit();
@@ -646,6 +775,18 @@ function bindViewEvents() {
       refreshActiveTab();
     });
   });
+
+  const phoneRaw = document.getElementById("phoneNumbersRaw");
+  if (phoneRaw) {
+    phoneRaw.addEventListener("input", event => {
+      state.phoneAssign.rawText = event.currentTarget.value;
+    });
+  }
+
+  const phoneFile = document.getElementById("phoneFile");
+  if (phoneFile) {
+    phoneFile.addEventListener("change", event => handlePhoneFile(event.currentTarget.files?.[0]));
+  }
 }
 
 async function refreshBaseData() {
@@ -705,6 +846,56 @@ async function loadOpenReport() {
     connection: state.connection,
     criteria
   });
+  render();
+}
+
+async function handlePhoneFile(file) {
+  if (!file) return;
+  const buffer = await file.arrayBuffer();
+  state.phoneAssign.fileName = file.name;
+  state.phoneAssign.fileBase64 = arrayBufferToBase64(buffer);
+  if (/\.(csv|txt)$/i.test(file.name)) {
+    state.phoneAssign.rawText = await file.text();
+  }
+  state.phonePreview = null;
+  render();
+  notify(tr("File loaded. Preview to check Chatwoot matches."), "ok");
+}
+
+async function previewPhoneAssign() {
+  if (!hasConnection()) return notify(tr("Save Chatwoot connection first."), "warn");
+  const criteria = getPhoneAssignCriteria();
+  state.phoneAssign = criteria;
+  state.phonePreview = null;
+
+  if (!criteria.targetAgentId) return notify(tr("Choose the target agent first."), "warn");
+  if (!criteria.rawText.trim() && !criteria.fileBase64) return notify(tr("Add a CSV/XLSX file or paste phone numbers first."), "warn");
+
+  const data = await api("/api/phone-assign/preview", { connection: state.connection, criteria });
+  state.phonePreview = data;
+  notify(tr("Phone preview finished: {matched}/{phones} phone(s) matched.", {
+    matched: data.matchedPhoneCount || 0,
+    phones: data.phoneCount || 0
+  }), data.count ? "ok" : "warn");
+  render();
+}
+
+async function executePhoneAssign() {
+  if (!state.phonePreview?.items?.length) return;
+  const actor = state.appContext?.currentAgent || { name: state.connection.operatorName || "Ops Admin" };
+  const criteria = state.phonePreview.criteria || getPhoneAssignCriteria();
+  const confirmed = window.confirm(tr("Execute assignment for {count} conversation(s)?", { count: state.phonePreview.items.length }));
+  if (!confirmed) return;
+  const job = await api("/api/phone-assign/execute", {
+    connection: state.connection,
+    criteria,
+    items: state.phonePreview.items,
+    actor
+  });
+  state.phonePreview = null;
+  await loadJobs();
+  notify(tr("Phone assignment finished: {succeeded}/{total} succeeded.", { succeeded: job.succeeded, total: job.total }), job.failed ? "warn" : "ok");
+  state.tab = "exports";
   render();
 }
 
@@ -818,6 +1009,18 @@ function getBulkCriteria() {
     ownerValue: value("fromAgentId"),
     includeContactConversations: Boolean(document.getElementById("includeContactConversations")?.checked),
     maxPages: Number(value("maxPages") || 20)
+  };
+}
+
+function getPhoneAssignCriteria() {
+  return {
+    rawText: value("phoneNumbersRaw"),
+    fileName: state.phoneAssign.fileName || "",
+    fileBase64: state.phoneAssign.fileBase64 || "",
+    status: value("phoneStatus") || "open",
+    inboxId: value("phoneInboxId"),
+    targetAgentId: value("phoneTargetAgentId"),
+    maxPhones: Number(value("phoneMaxPhones") || 2000)
   };
 }
 
@@ -1074,6 +1277,16 @@ function value(id) {
 
 function checkedValues(name) {
   return [...document.querySelectorAll(`input[name="${name}"]:checked`)].map(input => input.value);
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
 }
 
 function readPath(row, path) {
