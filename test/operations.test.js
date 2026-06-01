@@ -77,6 +77,43 @@ test("buildPhoneAssignPreview matches phone contacts and conversations", async (
   }
 });
 
+test("buildPhoneAssignPreview rejects fuzzy search results without phone equality", async () => {
+  const server = createServer((req, res) => {
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    if (req.url.startsWith("/api/v1/accounts/1/contacts/search?")) {
+      res.end(JSON.stringify({
+        payload: [{ id: 113176, name: "Wrong Contact", phone_number: "+966500000000" }]
+      }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const preview = await buildPhoneAssignPreview({
+      baseUrl: `http://127.0.0.1:${port}`,
+      accountId: "1",
+      apiToken: "test-token"
+    }, {
+      rawText: "966541582969",
+      targetAgentId: "7",
+      status: "all",
+      maxPhones: 20
+    });
+
+    assert.equal(preview.count, 0);
+    assert.equal(preview.misses.length, 1);
+    assert.equal(preview.misses[0].reason, "No exact phone match in Chatwoot search results");
+    assert.equal(preview.warnings.length, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("parsePhoneAssignInput returns a quick file count without Chatwoot", async () => {
   const parsed = await parsePhoneAssignInput({
     rawText: "Name,Phone\nAhmed,966558262332\nSara,+966 56 696 9482"

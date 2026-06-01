@@ -387,7 +387,10 @@ async function buildPhonePreviewRows(client, entry, criteria) {
     }
 
     const match = chooseContactByPhone(contacts, entry.normalizedPhone);
-    if (match.warning) warnings.push(match.warning);
+    if (!match) {
+      misses.push(phoneMiss(entry, "No exact phone match in Chatwoot search results", null, contacts.length));
+      return { items, misses, warnings };
+    }
 
     const response = await client.contactConversations(match.contact.id);
     const conversations = getPayload(response).filter(conversation => {
@@ -498,12 +501,7 @@ function chooseContactByPhone(contacts, normalizedPhone) {
   const tail = contacts.find(contact => contactMatchesPhone(contact, normalizedPhone));
   if (tail) return { contact: tail, matchStatus: "Phone tail match" };
 
-  const contact = contacts[0];
-  return {
-    contact,
-    matchStatus: "Search match",
-    warning: `Phone ${normalizedPhone} matched contact ${contact.id} by search, not by exact phone.`
-  };
+  return null;
 }
 
 function contactMatchesPhone(contact, normalizedPhone) {
@@ -539,14 +537,15 @@ function isLikelyPhone(phone) {
   return /^\d{8,16}$/.test(phone);
 }
 
-function phoneMiss(entry, reason, contact = null) {
+function phoneMiss(entry, reason, contact = null, searchMatches = 0) {
   return {
     inputPhone: entry.inputPhone,
     normalizedPhone: entry.normalizedPhone,
     reason,
     contactId: contact?.id || "",
     contactName: contact?.name || "",
-    phoneNumber: contact?.phone_number || ""
+    phoneNumber: contact?.phone_number || "",
+    contactSearchMatches: searchMatches || ""
   };
 }
 

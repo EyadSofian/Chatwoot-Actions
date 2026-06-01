@@ -219,9 +219,9 @@ const translations = {
     "File loaded. Preview to check Chatwoot matches.": "تم تحميل الملف. اعمل معاينة عشان تتأكد من المطابقات في Chatwoot.",
     "Contact not found": "العميل غير موجود",
     "No matching conversation": "لا توجد محادثة مطابقة",
+    "No exact phone match in Chatwoot search results": "نتائج البحث رجعت عملاء، لكن مفيش تطابق فعلي مع رقم العميل",
     "Exact phone": "تطابق رقم كامل",
     "Phone tail match": "تطابق آخر الرقم",
-    "Search match": "تطابق من البحث",
     "phoneCount": "عدد الأرقام",
     "matchedPhoneCount": "أرقام مطابقة",
     "inputPhone": "الرقم في الملف",
@@ -611,7 +611,7 @@ function phonePreviewTables() {
     </section>
     <section class="panel" style="margin-top:16px">
       <div class="panel-header"><h2>${tr("Numbers not ready")}</h2></div>
-      <div class="panel-body">${simpleTable(missedRows, ["inputPhone", "normalizedPhone", "reason", "contactId", "contactName", "phoneNumber"])}</div>
+      <div class="panel-body">${simpleTable(missedRows, ["inputPhone", "normalizedPhone", "reason", "contactSearchMatches", "contactId", "contactName", "phoneNumber"])}</div>
     </section>
   `;
 }
