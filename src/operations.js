@@ -45,7 +45,7 @@ export async function buildBulkPreview(connection, criteria = {}) {
           const response = await client.contactConversations(contact.id);
           const conversations = getPayload(response).filter(conversation => {
             const matchesInbox = criteria.inboxId ? Number(conversation.inbox_id) === Number(criteria.inboxId) : true;
-            return matchesInbox && matchesStatus(conversation, criteria.status);
+            return matchesInbox && matchesStatus(conversation, criteria.status) && matchesUnread(conversation, criteria.unreadOnly);
           });
           for (const conversation of conversations) {
             items.push(conversationToPreviewItem(conversation, criteria, "contact_conversation"));
@@ -258,6 +258,7 @@ export async function getOpenConversationReport(connection, criteria = {}) {
   const maxPages = Number(criteria.maxPages || process.env.CHATWOOT_MAX_PAGES || 20);
   const selectedInboxIds = normalizeIds(criteria.inboxIds);
   const selectedAgentIds = normalizeIds(criteria.agentIds);
+  const unreadOnly = Boolean(criteria.unreadOnly);
   const warnings = [];
 
   const [agentsResult, inboxesResult] = await Promise.allSettled([
@@ -282,7 +283,7 @@ export async function getOpenConversationReport(connection, criteria = {}) {
     rows.push(...conversations);
   }
 
-  const conversations = dedupeBy(rows, item => item.id).map(conversation => {
+  const allConversations = dedupeBy(rows, item => item.id).map(conversation => {
     const item = conversationToPreviewItem(conversation, criteria, "open_report");
     const inbox = inboxLookup.get(String(item.inboxId));
     const agent = agentLookup.get(String(item.assigneeId));
@@ -292,6 +293,7 @@ export async function getOpenConversationReport(connection, criteria = {}) {
       assigneeName: item.assigneeName || agent?.name || ""
     };
   });
+  const conversations = allConversations.filter(item => !unreadOnly || Number(item.unreadCount || 0) > 0);
 
   const inboxCounts = new Map();
   for (const item of conversations) {
@@ -301,11 +303,13 @@ export async function getOpenConversationReport(connection, criteria = {}) {
       inboxName: item.inboxName || inboxLookup.get(key)?.name || "Unknown inbox",
       openCount: 0,
       assignedCount: 0,
-      unassignedCount: 0
+      unassignedCount: 0,
+      unreadCount: 0
     };
     current.openCount += 1;
     if (item.assigneeId) current.assignedCount += 1;
     else current.unassignedCount += 1;
+    if (Number(item.unreadCount || 0) > 0) current.unreadCount += 1;
     inboxCounts.set(key, current);
   }
 
@@ -318,7 +322,8 @@ export async function getOpenConversationReport(connection, criteria = {}) {
         inboxName: inbox?.name || `Inbox ${inboxId}`,
         openCount: 0,
         assignedCount: 0,
-        unassignedCount: 0
+        unassignedCount: 0,
+        unreadCount: 0
       });
     }
   }
@@ -332,9 +337,11 @@ export async function getOpenConversationReport(connection, criteria = {}) {
     const current = agentCounts.get(key) || {
       agentId: item.assigneeId,
       agentName: item.assigneeName || agent?.name || `Agent ${item.assigneeId}`,
-      openCount: 0
+      openCount: 0,
+      unreadCount: 0
     };
     current.openCount += 1;
+    if (Number(item.unreadCount || 0) > 0) current.unreadCount += 1;
     agentCounts.set(key, current);
   }
 
@@ -344,12 +351,16 @@ export async function getOpenConversationReport(connection, criteria = {}) {
       agentCounts.set(agentId, {
         agentId,
         agentName: agent?.name || `Agent ${agentId}`,
-        openCount: 0
+        openCount: 0,
+        unreadCount: 0
       });
     }
   }
 
   const unassigned = conversations.filter(item => !item.assigneeId);
+  const unread = conversations.filter(item => Number(item.unreadCount || 0) > 0);
+  const assignedUnread = unread.filter(item => item.assigneeId);
+  const unassignedUnread = unread.filter(item => !item.assigneeId);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -357,18 +368,23 @@ export async function getOpenConversationReport(connection, criteria = {}) {
       status: "open",
       inboxIds: selectedInboxIds,
       agentIds: selectedAgentIds,
-      maxPages
+      maxPages,
+      unreadOnly
     },
     totals: {
       openCount: conversations.length,
       assignedCount: conversations.length - unassigned.length,
       unassignedCount: unassigned.length,
+      unreadCount: unread.length,
+      assignedUnreadCount: assignedUnread.length,
+      unassignedUnreadCount: unassignedUnread.length,
       inboxCount: inboxCounts.size,
       agentCount: agentCounts.size
     },
     inboxes: [...inboxCounts.values()].sort((a, b) => b.openCount - a.openCount || String(a.inboxName).localeCompare(String(b.inboxName))),
     agents: [...agentCounts.values()].sort((a, b) => b.openCount - a.openCount || String(a.agentName).localeCompare(String(b.agentName))),
     unassigned,
+    unread,
     conversations,
     warnings
   };
@@ -612,7 +628,8 @@ async function listConversationsByAgent(client, criteria, maxPages, warnings) {
 
   return dedupeBy(conversations, item => item.id).filter(conversation => {
     const assigneeId = conversation?.meta?.assignee?.id;
-    return criteria.fromAgentId ? Number(assigneeId) === Number(criteria.fromAgentId) : true;
+    const matchesAssignee = criteria.fromAgentId ? Number(assigneeId) === Number(criteria.fromAgentId) : true;
+    return matchesAssignee && matchesUnread(conversation, criteria.unreadOnly);
   }).map(item => ({ ...item, _source: usedFilterEndpoint ? "filter" : "list" }));
 }
 
@@ -679,6 +696,7 @@ function conversationToPreviewItem(conversation, criteria, source) {
     source,
     conversationId: conversation.id,
     status: conversation.status,
+    unreadCount: getUnreadCount(conversation),
     inboxId,
     inboxName: inbox.name || "",
     teamId: team.id || conversation.team_id || null,
@@ -716,6 +734,16 @@ function contactToPreviewItem(contact, criteria) {
 function matchesStatus(conversation, status) {
   if (!status || status === "all") return DEFAULT_STATUSES.includes(conversation.status);
   return conversation.status === status;
+}
+
+function matchesUnread(conversation, unreadOnly) {
+  return !unreadOnly || getUnreadCount(conversation) > 0;
+}
+
+function getUnreadCount(conversation) {
+  const value = conversation?.unread_count ?? conversation?.unreadCount ?? 0;
+  const count = Number(value);
+  return Number.isFinite(count) && count > 0 ? count : 0;
 }
 
 function dedupeBy(rows, keyFn) {

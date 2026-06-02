@@ -22,11 +22,13 @@ const state = {
     inboxId: "",
     action: "assign_agent",
     ownerAttribute: "sales_owner_id",
+    unreadOnly: false,
     maxPages: 20
   },
   openReportCriteria: {
     inboxIds: [],
     agentIds: [],
+    unreadOnly: false,
     maxPages: 20
   },
   phoneAssign: {
@@ -234,8 +236,18 @@ const translations = {
     "openCount": "عدد المفتوح",
     "assignedCount": "عدد المعيّن",
     "unassignedCount": "عدد غير المعيّن",
+    "unreadCount": "عدد غير المقروء",
+    "assignedUnreadCount": "غير المقروء المعيّن",
+    "unassignedUnreadCount": "غير المقروء بدون موظف",
     "agentId": "رقم الموظف",
     "agentName": "اسم الموظف",
+    "Unread only": "غير المقروء فقط",
+    "Only unread conversations": "المحادثات غير المقروءة فقط",
+    "Unread conversations": "محادثات غير مقروءة",
+    "Unread by inbox": "غير المقروء حسب الإنبوكس",
+    "Open conversations with unread messages, grouped by inbox.": "المحادثات المفتوحة اللي فيها رسائل غير مقروءة، مجمعة حسب الإنبوكس.",
+    "Unread conversation list": "قائمة المحادثات غير المقروءة",
+    "Unread filtering is applied locally after Chatwoot returns conversations, so increase the page limit if you expect many open conversations.": "فلتر غير المقروء بيتطبق محليًا بعد ما Chatwoot يرجع المحادثات، فزوّد حد الصفحات لو عندك محادثات مفتوحة كتير.",
     "Also reassign conversations for these customers": "حوّل محادثات العملاء دول كمان",
     "Tip: start with Open conversations and a small page limit. After Preview looks correct, increase the limit and execute.": "نصيحة: ابدأ بالمحادثات المفتوحة وحد صفحات صغير. بعد ما المعاينة تبقى مظبوطة، زود الحد ونفذ.",
     "Select agent": "اختار موظف",
@@ -483,7 +495,11 @@ function openReportView() {
         <div class="form-grid" style="margin-top:14px">
           ${inputField("reportMaxPages", "Search limit: Chatwoot API pages", state.openReportCriteria.maxPages || "20", "number")}
         </div>
+        <label class="field checkbox-field">
+          <span><input type="checkbox" id="reportUnreadOnly" ${state.openReportCriteria.unreadOnly ? "checked" : ""}> ${tr("Unread only")}</span>
+        </label>
         <p class="notice">${tr("Leave empty to include all.")} ${tr("Chatwoot sends results in pages. 20 means scan up to 20 API pages, then stop for safety. This does not execute anything.")}</p>
+        <p class="notice">${tr("Unread filtering is applied locally after Chatwoot returns conversations, so increase the page limit if you expect many open conversations.")}</p>
         <div class="actions">
           <button class="button" data-action="load-open-report">${tr("Run open report")}</button>
         </div>
@@ -493,6 +509,11 @@ function openReportView() {
       ${stat("Open conversations", totals.openCount ?? "-")}
       ${stat("Assigned conversations", totals.assignedCount ?? "-")}
       ${stat("Unassigned conversations", totals.unassignedCount ?? "-")}
+    </div>
+    <div class="grid three" style="margin-top:16px">
+      ${stat("Unread conversations", totals.unreadCount ?? "-")}
+      ${stat("assignedUnreadCount", totals.assignedUnreadCount ?? "-")}
+      ${stat("unassignedUnreadCount", totals.unassignedUnreadCount ?? "-")}
     </div>
     ${openReportTables()}
   `;
@@ -509,6 +530,14 @@ function openReportTables() {
       openCount: row.openCount
     }))
     .sort((a, b) => Number(b.unassignedCount || 0) - Number(a.unassignedCount || 0) || String(a.inboxName).localeCompare(String(b.inboxName)));
+  const unreadByInbox = state.openReport.inboxes
+    .map(row => ({
+      inboxName: row.inboxName,
+      inboxId: row.inboxId,
+      unreadCount: row.unreadCount,
+      openCount: row.openCount
+    }))
+    .sort((a, b) => Number(b.unreadCount || 0) - Number(a.unreadCount || 0) || String(a.inboxName).localeCompare(String(b.inboxName)));
   return `
     ${warnings}
     <section class="panel" style="margin-top:16px">
@@ -520,23 +549,36 @@ function openReportTables() {
       </div>
       <div class="panel-body">${simpleTable(unassignedByInbox, ["inboxName", "inboxId", "unassignedCount", "openCount"])}</div>
     </section>
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header">
+        <div>
+          <h2>${tr("Unread by inbox")}</h2>
+          <p class="panel-note">${tr("Open conversations with unread messages, grouped by inbox.")}</p>
+        </div>
+      </div>
+      <div class="panel-body">${simpleTable(unreadByInbox, ["inboxName", "inboxId", "unreadCount", "openCount"])}</div>
+    </section>
     <div class="grid two" style="margin-top:16px">
       <section class="panel">
         <div class="panel-header"><h2>${tr("Inbox summary")}</h2></div>
-        <div class="panel-body">${simpleTable(state.openReport.inboxes, ["inboxName", "inboxId", "openCount", "assignedCount", "unassignedCount"])}</div>
+        <div class="panel-body">${simpleTable(state.openReport.inboxes, ["inboxName", "inboxId", "openCount", "unreadCount", "assignedCount", "unassignedCount"])}</div>
       </section>
       <section class="panel">
         <div class="panel-header"><h2>${tr("Agent summary")}</h2></div>
-        <div class="panel-body">${simpleTable(state.openReport.agents, ["agentName", "agentId", "openCount"])}</div>
+        <div class="panel-body">${simpleTable(state.openReport.agents, ["agentName", "agentId", "openCount", "unreadCount"])}</div>
       </section>
     </div>
     <section class="panel" style="margin-top:16px">
       <div class="panel-header"><h2>${tr("Unassigned conversations")}</h2></div>
-      <div class="panel-body">${simpleTable(state.openReport.unassigned.slice(0, 200), ["conversationId", "inboxName", "contactName", "status", "source"])}</div>
+      <div class="panel-body">${simpleTable(state.openReport.unassigned.slice(0, 200), ["conversationId", "inboxName", "contactName", "unreadCount", "status", "source"])}</div>
+    </section>
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>${tr("Unread conversation list")}</h2></div>
+      <div class="panel-body">${simpleTable((state.openReport.unread || []).slice(0, 200), ["conversationId", "inboxName", "contactName", "assigneeName", "unreadCount", "status", "source"])}</div>
     </section>
     <section class="panel" style="margin-top:16px">
       <div class="panel-header"><h2>${tr("Open conversation list")}</h2></div>
-      <div class="panel-body">${simpleTable(state.openReport.conversations.slice(0, 200), ["conversationId", "inboxName", "contactName", "assigneeName", "status", "source"])}</div>
+      <div class="panel-body">${simpleTable(state.openReport.conversations.slice(0, 200), ["conversationId", "inboxName", "contactName", "assigneeName", "unreadCount", "status", "source"])}</div>
     </section>
   `;
 }
@@ -867,6 +909,7 @@ async function loadOpenReport() {
   const criteria = {
     inboxIds: checkedValues("reportInboxIds"),
     agentIds: checkedValues("reportAgentIds"),
+    unreadOnly: Boolean(document.getElementById("reportUnreadOnly")?.checked),
     maxPages: Number(value("reportMaxPages") || 20)
   };
   state.openReportCriteria = criteria;
@@ -1059,6 +1102,7 @@ function getBulkCriteria() {
     ownerAttribute: value("ownerAttribute") || "sales_owner_id",
     ownerValue: value("fromAgentId"),
     includeContactConversations: Boolean(document.getElementById("includeContactConversations")?.checked),
+    unreadOnly: Boolean(document.getElementById("unreadOnly")?.checked),
     maxPages: Number(value("maxPages") || 20)
   };
 }
@@ -1151,7 +1195,7 @@ function previewTable() {
   const emptyHint = state.preview.count === 0
     ? `<p class="notice warn">${tr("No rows matched these filters. Try Status = All, remove the inbox filter, or confirm the current assignee/owner is correct.")}</p>`
     : "";
-  return `${warnings}${emptyHint}${simpleTable(state.preview.items.slice(0, 100), ["type", "conversationId", "inboxName", "inboxId", "contactId", "contactName", "status", "assigneeName", "source"])}`;
+  return `${warnings}${emptyHint}${simpleTable(state.preview.items.slice(0, 100), ["type", "conversationId", "inboxName", "inboxId", "contactId", "contactName", "unreadCount", "status", "assigneeName", "source"])}`;
 }
 
 function embeddedBanner() {
@@ -1201,6 +1245,7 @@ function actionForm(criteria) {
     : [["assign_agent", "Transfer to agent"], ["assign_team", "Move to team"], ["unassign", "Remove assignee"]];
   const isTeam = action === "assign_team";
   const isUnassign = action === "unassign";
+  const showUnreadOption = !isContacts || criteria.includeContactConversations;
   return `
     <div class="form-grid action-form">
       ${selectField("scope", "What should be changed?", [["conversations", "Conversations"], ["contacts", "Customer owner field"]], criteria.scope)}
@@ -1218,8 +1263,14 @@ function actionForm(criteria) {
         <span><input type="checkbox" id="includeContactConversations" ${criteria.includeContactConversations ? "checked" : ""}> ${tr("Also reassign conversations for these customers")}</span>
       </label>
     ` : `<input type="checkbox" id="includeContactConversations" hidden ${criteria.includeContactConversations ? "checked" : ""}>`}
+    ${showUnreadOption ? `
+      <label class="field checkbox-field">
+        <span><input type="checkbox" id="unreadOnly" ${criteria.unreadOnly ? "checked" : ""}> ${tr("Only unread conversations")}</span>
+      </label>
+    ` : ""}
     <p class="notice">${tr(isContacts ? "Customer owner mode only finds contacts that already have this custom attribute. If you never filled sales_owner_id, preview can be zero." : "Conversation mode finds conversations assigned to the selected agent. Use this for moving chats from one employee to another.")}</p>
     <p class="notice">${tr("Chatwoot sends results in pages. 20 means scan up to 20 API pages, then stop for safety. This does not execute anything.")}</p>
+    ${showUnreadOption ? `<p class="notice">${tr("Unread filtering is applied locally after Chatwoot returns conversations, so increase the page limit if you expect many open conversations.")}</p>` : ""}
   `;
 }
 

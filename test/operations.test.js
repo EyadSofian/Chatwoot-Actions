@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { buildPhoneAssignPreview, extractPhoneNumbers, normalizePhone, parsePhoneAssignInput } from "../src/operations.js";
+import { buildPhoneAssignPreview, extractPhoneNumbers, getOpenConversationReport, normalizePhone, parsePhoneAssignInput } from "../src/operations.js";
 
 test("normalizePhone removes formatting and international prefix", () => {
   assert.equal(normalizePhone("+966 55 826 2332"), "966558262332");
@@ -121,4 +121,86 @@ test("parsePhoneAssignInput returns a quick file count without Chatwoot", async 
 
   assert.equal(parsed.phoneCount, 2);
   assert.equal(parsed.sample[0].normalizedPhone, "966558262332");
+});
+
+test("getOpenConversationReport can filter unread conversations locally", async () => {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/agents") {
+      res.end(JSON.stringify([
+        { id: 4, name: "Old Agent", email: "old@example.com" }
+      ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/inboxes") {
+      res.end(JSON.stringify({
+        payload: [{ id: 2, name: "WhatsApp" }]
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations") {
+      const page = Number(url.searchParams.get("page") || 1);
+      res.end(JSON.stringify({
+        payload: page === 1 ? [
+          {
+            id: 33,
+            status: "open",
+            unread_count: 2,
+            inbox_id: 2,
+            meta: {
+              sender: { id: 10, name: "Ahmed" },
+              assignee: { id: 4, name: "Old Agent" },
+              inbox: { id: 2, name: "WhatsApp" }
+            }
+          },
+          {
+            id: 34,
+            status: "open",
+            unread_count: 0,
+            inbox_id: 2,
+            meta: {
+              sender: { id: 11, name: "Sara" },
+              assignee: null,
+              inbox: { id: 2, name: "WhatsApp" }
+            }
+          }
+        ] : []
+      }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const report = await getOpenConversationReport({
+      baseUrl: `http://127.0.0.1:${port}`,
+      accountId: "1",
+      apiToken: "test-token"
+    }, {
+      inboxIds: ["2"],
+      unreadOnly: true,
+      maxPages: 2
+    });
+
+    assert.equal(report.criteria.unreadOnly, true);
+    assert.equal(report.totals.openCount, 1);
+    assert.equal(report.totals.unreadCount, 1);
+    assert.equal(report.totals.assignedUnreadCount, 1);
+    assert.equal(report.totals.unassignedUnreadCount, 0);
+    assert.equal(report.conversations[0].conversationId, 33);
+    assert.equal(report.conversations[0].unreadCount, 2);
+    assert.equal(report.unread.length, 1);
+    assert.equal(report.inboxes[0].unreadCount, 1);
+    assert.equal(report.agents[0].unreadCount, 1);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
 });
