@@ -259,6 +259,9 @@ export async function getOpenConversationReport(connection, criteria = {}) {
   const selectedInboxIds = normalizeIds(criteria.inboxIds);
   const selectedAgentIds = normalizeIds(criteria.agentIds);
   const unreadOnly = Boolean(criteria.unreadOnly);
+  const includeReplyStatus = Boolean(criteria.includeReplyStatus || criteria.needsReplyOnly);
+  const needsReplyOnly = Boolean(criteria.needsReplyOnly);
+  const replyCheckLimit = Math.max(1, Math.min(Number(criteria.replyCheckLimit || 100), 1000));
   const warnings = [];
 
   const [agentsResult, inboxesResult] = await Promise.allSettled([
@@ -293,7 +296,32 @@ export async function getOpenConversationReport(connection, criteria = {}) {
       assigneeName: item.assigneeName || agent?.name || ""
     };
   });
-  const conversations = allConversations.filter(item => !unreadOnly || Number(item.unreadCount || 0) > 0);
+  let conversations = allConversations.filter(item => !unreadOnly || Number(item.unreadCount || 0) > 0);
+  if (includeReplyStatus) {
+    if (conversations.length > replyCheckLimit) {
+      warnings.push(`Only the first ${replyCheckLimit} conversations were checked for sales replies. Increase the reply check limit to scan more.`);
+    }
+
+    const checkedConversations = await mapLimit(
+      conversations.slice(0, replyCheckLimit),
+      Number(criteria.replyLookupConcurrency || 4),
+      item => attachSalesReplyStatus(client, item, warnings)
+    );
+    const skippedConversations = conversations.slice(replyCheckLimit).map(item => ({
+      ...item,
+      replyChecked: false,
+      needsReply: false,
+      replyStatus: "not_checked",
+      lastCustomerMessageAt: "",
+      lastSalesReplyAt: "",
+      lastSalesReplyBy: "",
+      lastMessageAt: "",
+      lastMessageDirection: ""
+    }));
+
+    conversations = [...checkedConversations, ...skippedConversations];
+    if (needsReplyOnly) conversations = conversations.filter(item => item.needsReply);
+  }
 
   const inboxCounts = new Map();
   for (const item of conversations) {
@@ -304,12 +332,16 @@ export async function getOpenConversationReport(connection, criteria = {}) {
       openCount: 0,
       assignedCount: 0,
       unassignedCount: 0,
-      unreadCount: 0
+      unreadCount: 0,
+      needsReplyCount: 0,
+      repliedCount: 0,
+      replyUnknownCount: 0
     };
     current.openCount += 1;
     if (item.assigneeId) current.assignedCount += 1;
     else current.unassignedCount += 1;
     if (Number(item.unreadCount || 0) > 0) current.unreadCount += 1;
+    incrementReplyCounts(current, item);
     inboxCounts.set(key, current);
   }
 
@@ -323,7 +355,10 @@ export async function getOpenConversationReport(connection, criteria = {}) {
         openCount: 0,
         assignedCount: 0,
         unassignedCount: 0,
-        unreadCount: 0
+        unreadCount: 0,
+        needsReplyCount: 0,
+        repliedCount: 0,
+        replyUnknownCount: 0
       });
     }
   }
@@ -338,10 +373,14 @@ export async function getOpenConversationReport(connection, criteria = {}) {
       agentId: item.assigneeId,
       agentName: item.assigneeName || agent?.name || `Agent ${item.assigneeId}`,
       openCount: 0,
-      unreadCount: 0
+      unreadCount: 0,
+      needsReplyCount: 0,
+      repliedCount: 0,
+      replyUnknownCount: 0
     };
     current.openCount += 1;
     if (Number(item.unreadCount || 0) > 0) current.unreadCount += 1;
+    incrementReplyCounts(current, item);
     agentCounts.set(key, current);
   }
 
@@ -352,7 +391,10 @@ export async function getOpenConversationReport(connection, criteria = {}) {
         agentId,
         agentName: agent?.name || `Agent ${agentId}`,
         openCount: 0,
-        unreadCount: 0
+        unreadCount: 0,
+        needsReplyCount: 0,
+        repliedCount: 0,
+        replyUnknownCount: 0
       });
     }
   }
@@ -361,6 +403,12 @@ export async function getOpenConversationReport(connection, criteria = {}) {
   const unread = conversations.filter(item => Number(item.unreadCount || 0) > 0);
   const assignedUnread = unread.filter(item => item.assigneeId);
   const unassignedUnread = unread.filter(item => !item.assigneeId);
+  const needsReply = conversations.filter(item => item.needsReply);
+  const selectedAgentNeedsReply = selectedAgentIds.length
+    ? needsReply.filter(item => selectedAgentIds.includes(String(item.assigneeId)))
+    : needsReply;
+  const replied = conversations.filter(item => item.replyStatus === "replied");
+  const replyUnknown = conversations.filter(item => item.replyStatus === "unknown" || item.replyStatus === "not_checked");
 
   return {
     generatedAt: new Date().toISOString(),
@@ -369,7 +417,10 @@ export async function getOpenConversationReport(connection, criteria = {}) {
       inboxIds: selectedInboxIds,
       agentIds: selectedAgentIds,
       maxPages,
-      unreadOnly
+      unreadOnly,
+      includeReplyStatus,
+      needsReplyOnly,
+      replyCheckLimit
     },
     totals: {
       openCount: conversations.length,
@@ -378,6 +429,9 @@ export async function getOpenConversationReport(connection, criteria = {}) {
       unreadCount: unread.length,
       assignedUnreadCount: assignedUnread.length,
       unassignedUnreadCount: unassignedUnread.length,
+      needsReplyCount: needsReply.length,
+      repliedCount: replied.length,
+      replyUnknownCount: replyUnknown.length,
       inboxCount: inboxCounts.size,
       agentCount: agentCounts.size
     },
@@ -385,6 +439,8 @@ export async function getOpenConversationReport(connection, criteria = {}) {
     agents: [...agentCounts.values()].sort((a, b) => b.openCount - a.openCount || String(a.agentName).localeCompare(String(b.agentName))),
     unassigned,
     unread,
+    needsReply,
+    selectedAgentNeedsReply,
     conversations,
     warnings
   };
@@ -740,10 +796,140 @@ function matchesUnread(conversation, unreadOnly) {
   return !unreadOnly || getUnreadCount(conversation) > 0;
 }
 
+async function attachSalesReplyStatus(client, item, warnings) {
+  try {
+    const response = await client.conversationMessages(item.conversationId);
+    return {
+      ...item,
+      ...analyzeSalesReplyStatus(normalizeRows(response))
+    };
+  } catch (error) {
+    warnings.push(`Could not load messages for conversation ${item.conversationId}: ${error.message}`);
+    return {
+      ...item,
+      replyChecked: false,
+      needsReply: false,
+      replyStatus: "unknown",
+      lastCustomerMessageAt: "",
+      lastSalesReplyAt: "",
+      lastSalesReplyBy: "",
+      lastMessageAt: "",
+      lastMessageDirection: ""
+    };
+  }
+}
+
+function analyzeSalesReplyStatus(messages) {
+  const entries = messages
+    .map((message, index) => ({
+      message,
+      index,
+      timeMs: getMessageTimeMs(message)
+    }))
+    .sort((a, b) => {
+      const left = a.timeMs ?? a.index;
+      const right = b.timeMs ?? b.index;
+      return left - right || a.index - b.index;
+    });
+
+  let lastCustomer = null;
+  let lastSalesReply = null;
+  let lastPublic = null;
+
+  for (const entry of entries) {
+    if (isCustomerMessage(entry.message)) {
+      lastCustomer = entry;
+      lastPublic = { ...entry, direction: "customer" };
+    } else if (isSalesReplyMessage(entry.message)) {
+      lastSalesReply = entry;
+      lastPublic = { ...entry, direction: "sales" };
+    }
+  }
+
+  const needsReply = Boolean(lastCustomer && (!lastSalesReply || compareMessageEntries(lastCustomer, lastSalesReply) > 0));
+  const replyStatus = !lastCustomer ? "no_customer_message" : needsReply ? "needs_reply" : "replied";
+
+  return {
+    replyChecked: true,
+    needsReply,
+    replyStatus,
+    lastCustomerMessageAt: formatMessageTime(lastCustomer),
+    lastSalesReplyAt: formatMessageTime(lastSalesReply),
+    lastSalesReplyBy: getSenderName(lastSalesReply?.message),
+    lastMessageAt: formatMessageTime(lastPublic),
+    lastMessageDirection: lastPublic?.direction || ""
+  };
+}
+
+function incrementReplyCounts(current, item) {
+  if (item.replyStatus === "needs_reply") current.needsReplyCount += 1;
+  if (item.replyStatus === "replied") current.repliedCount += 1;
+  if (item.replyStatus === "unknown" || item.replyStatus === "not_checked") current.replyUnknownCount += 1;
+}
+
 function getUnreadCount(conversation) {
   const value = conversation?.unread_count ?? conversation?.unreadCount ?? 0;
   const count = Number(value);
   return Number.isFinite(count) && count > 0 ? count : 0;
+}
+
+function compareMessageEntries(left, right) {
+  const leftValue = left.timeMs ?? left.index;
+  const rightValue = right.timeMs ?? right.index;
+  return leftValue - rightValue || left.index - right.index;
+}
+
+function isCustomerMessage(message) {
+  if (!isPublicMessage(message)) return false;
+  const type = getMessageType(message);
+  if (type === 0 || type === "incoming") return true;
+  return getSenderType(message) === "contact";
+}
+
+function isSalesReplyMessage(message) {
+  if (!isPublicMessage(message)) return false;
+  const senderType = getSenderType(message);
+  if (senderType === "user" || senderType === "agent") return true;
+  const type = getMessageType(message);
+  return (type === 1 || type === "outgoing") && senderType !== "contact";
+}
+
+function isPublicMessage(message) {
+  if (!message || message.private) return false;
+  const type = getMessageType(message);
+  if (type === 2 || type === "activity") return false;
+  const contentType = String(message.content_type || message.contentType || "").toLowerCase();
+  return contentType !== "activity";
+}
+
+function getMessageType(message) {
+  const value = message?.message_type ?? message?.messageType;
+  const numberValue = Number(value);
+  if (Number.isFinite(numberValue)) return numberValue;
+  return String(value || "").toLowerCase();
+}
+
+function getSenderType(message) {
+  return String(message?.sender_type || message?.sender?.type || "").toLowerCase();
+}
+
+function getSenderName(message) {
+  return message?.sender?.name || message?.sender_name || "";
+}
+
+function getMessageTimeMs(message) {
+  const raw = message?.created_at ?? message?.createdAt ?? message?.timestamp ?? message?.updated_at ?? message?.updatedAt;
+  if (raw === undefined || raw === null || raw === "") return null;
+  if (typeof raw === "number") return raw > 1000000000000 ? raw : raw * 1000;
+  const parsedNumber = Number(raw);
+  if (Number.isFinite(parsedNumber)) return parsedNumber > 1000000000000 ? parsedNumber : parsedNumber * 1000;
+  const parsedDate = Date.parse(raw);
+  return Number.isFinite(parsedDate) ? parsedDate : null;
+}
+
+function formatMessageTime(entry) {
+  if (!entry?.timeMs) return "";
+  return new Date(entry.timeMs).toISOString();
 }
 
 function dedupeBy(rows, keyFn) {

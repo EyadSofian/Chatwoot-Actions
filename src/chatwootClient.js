@@ -162,6 +162,10 @@ export class ChatwootClient {
     });
   }
 
+  conversationMessages(conversationId, query = {}) {
+    return this.request(this.accountPath(`/conversations/${conversationId}/messages`), { query });
+  }
+
   createMessage(conversationId, payload) {
     return this.request(this.accountPath(`/conversations/${conversationId}/messages`), {
       method: "POST",

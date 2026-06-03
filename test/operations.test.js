@@ -204,3 +204,107 @@ test("getOpenConversationReport can filter unread conversations locally", async 
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+test("getOpenConversationReport can detect customers needing a sales reply", async () => {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/agents") {
+      res.end(JSON.stringify([
+        { id: 4, name: "Old Agent", email: "old@example.com" }
+      ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/inboxes") {
+      res.end(JSON.stringify({
+        payload: [{ id: 2, name: "WhatsApp" }]
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations") {
+      const page = Number(url.searchParams.get("page") || 1);
+      res.end(JSON.stringify({
+        payload: page === 1 ? [
+          {
+            id: 33,
+            status: "open",
+            unread_count: 1,
+            inbox_id: 2,
+            meta: {
+              sender: { id: 10, name: "Ahmed" },
+              assignee: { id: 4, name: "Old Agent" },
+              inbox: { id: 2, name: "WhatsApp" }
+            }
+          },
+          {
+            id: 34,
+            status: "open",
+            unread_count: 0,
+            inbox_id: 2,
+            meta: {
+              sender: { id: 11, name: "Sara" },
+              assignee: { id: 4, name: "Old Agent" },
+              inbox: { id: 2, name: "WhatsApp" }
+            }
+          }
+        ] : []
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages") {
+      res.end(JSON.stringify({
+        payload: [
+          { id: 1, message_type: 1, sender_type: "User", sender: { name: "Old Agent" }, created_at: 100 },
+          { id: 2, message_type: 0, sender_type: "Contact", sender: { name: "Ahmed" }, created_at: 200 }
+        ]
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/34/messages") {
+      res.end(JSON.stringify({
+        payload: [
+          { id: 3, message_type: 0, sender_type: "Contact", sender: { name: "Sara" }, created_at: 100 },
+          { id: 4, message_type: 1, sender_type: "User", sender: { name: "Old Agent" }, created_at: 300 }
+        ]
+      }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const report = await getOpenConversationReport({
+      baseUrl: `http://127.0.0.1:${port}`,
+      accountId: "1",
+      apiToken: "test-token"
+    }, {
+      inboxIds: ["2"],
+      includeReplyStatus: true,
+      replyCheckLimit: 10,
+      maxPages: 2
+    });
+
+    assert.equal(report.criteria.includeReplyStatus, true);
+    assert.equal(report.totals.openCount, 2);
+    assert.equal(report.totals.needsReplyCount, 1);
+    assert.equal(report.totals.repliedCount, 1);
+    assert.equal(report.needsReply.length, 1);
+    assert.equal(report.selectedAgentNeedsReply.length, 1);
+    assert.equal(report.needsReply[0].conversationId, 33);
+    assert.equal(report.needsReply[0].replyStatus, "needs_reply");
+    assert.equal(report.conversations.find(item => item.conversationId === 34).replyStatus, "replied");
+    assert.equal(report.agents[0].needsReplyCount, 1);
+    assert.equal(report.agents[0].repliedCount, 1);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});

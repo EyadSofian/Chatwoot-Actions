@@ -7,6 +7,7 @@ Small self-hosted companion app for Chatwoot operations:
 - Bulk unassign conversations from an agent.
 - Assign conversations from a pasted phone list, CSV, or XLSX file.
 - Report open conversations by selected inbox, unassigned queue, and selected agents.
+- Check whether selected open conversations still need a public sales reply.
 - Transfer contact ownership via a configurable contact custom attribute such as `sales_owner_id`.
 - Preview every affected row before writing.
 - Store a local audit log for every action made through this app.
@@ -83,7 +84,7 @@ Use the language button in the top bar to switch between English and Arabic. Ara
 
 For the customer transfer report, use the local action logs and bulk job CSV exports. Every transfer executed from the app records the actor, action, source owner/agent, target owner/agent, affected row, and job id.
 
-Use the `Open Report` screen when you only need visibility, not a write action. It can show open conversation counts per selected inbox, unassigned open conversations, and open conversation counts for selected agents.
+Use the `Open Report` screen when you only need visibility, not a write action. It can show open conversation counts per selected inbox, unassigned open conversations, unread counts, and open conversation counts for selected agents. Enable `Check sales reply status` when you also need to know whether the customer's last public message has been answered by sales. This reads messages inside each conversation, so start with a small sales reply check limit and increase it after the report looks correct.
 
 Use the `Phone Assign` screen when you receive a list like `Contact Name, Phone, Salesperson`. Paste the CSV content or upload `.csv`, `.txt`, or `.xlsx`, choose the target agent, preview matches, then execute. The app first reads the file and shows how many phone numbers were found, then searches Chatwoot contacts by phone number, filters their conversations by status/inbox, and only assigns the conversations shown in the preview. The inbox field is a source filter for existing conversations; it does not move a conversation to another inbox.
 

@@ -29,6 +29,9 @@ const state = {
     inboxIds: [],
     agentIds: [],
     unreadOnly: false,
+    includeReplyStatus: false,
+    needsReplyOnly: false,
+    replyCheckLimit: 100,
     maxPages: 20
   },
   phoneAssign: {
@@ -248,6 +251,34 @@ const translations = {
     "Open conversations with unread messages, grouped by inbox.": "المحادثات المفتوحة اللي فيها رسائل غير مقروءة، مجمعة حسب الإنبوكس.",
     "Unread conversation list": "قائمة المحادثات غير المقروءة",
     "Unread filtering is applied locally after Chatwoot returns conversations, so increase the page limit if you expect many open conversations.": "فلتر غير المقروء بيتطبق محليًا بعد ما Chatwoot يرجع المحادثات، فزوّد حد الصفحات لو عندك محادثات مفتوحة كتير.",
+    "Check sales reply status": "فحص رد السيلز",
+    "Only customers needing a sales reply": "العملاء اللي محتاجين رد فقط",
+    "Sales reply check limit": "حد فحص رد السيلز",
+    "Sales reply checking reads messages inside each conversation, so start with a small limit and increase it after the report looks correct.": "فحص رد السيلز بيقرأ الرسائل جوه كل محادثة، فابدأ بحد صغير وزوّده بعد ما التقرير يبقى مظبوط.",
+    "Needs sales reply": "محتاج رد من السيلز",
+    "Replied by sales": "تم الرد من السيلز",
+    "Reply status unknown": "حالة الرد غير معروفة",
+    "Customers needing reply": "عملاء محتاجين رد",
+    "Sales reply summary": "ملخص رد السيلز",
+    "replyStatus": "حالة رد السيلز",
+    "needsReply": "محتاج رد؟",
+    "needsReplyCount": "محتاجين رد",
+    "repliedCount": "تم الرد عليهم",
+    "replyUnknownCount": "لم يتم الفحص",
+    "lastCustomerMessageAt": "آخر رسالة عميل",
+    "lastSalesReplyAt": "آخر رد سيلز",
+    "lastSalesReplyBy": "آخر رد بواسطة",
+    "lastMessageAt": "آخر رسالة",
+    "lastMessageDirection": "اتجاه آخر رسالة",
+    "needs_reply": "محتاج رد",
+    "replied": "تم الرد",
+    "no_customer_message": "لا توجد رسالة عميل",
+    "not_checked": "لم يتم الفحص",
+    "unknown": "غير معروف",
+    "customer": "عميل",
+    "sales": "سيلز",
+    "Yes": "نعم",
+    "No": "لا",
     "Also reassign conversations for these customers": "حوّل محادثات العملاء دول كمان",
     "Tip: start with Open conversations and a small page limit. After Preview looks correct, increase the limit and execute.": "نصيحة: ابدأ بالمحادثات المفتوحة وحد صفحات صغير. بعد ما المعاينة تبقى مظبوطة، زود الحد ونفذ.",
     "Select agent": "اختار موظف",
@@ -478,6 +509,7 @@ function dashboardView() {
 function openReportView() {
   const report = state.openReport;
   const totals = report?.totals || {};
+  const showReplyStats = Boolean(report?.criteria?.includeReplyStatus || state.openReportCriteria.includeReplyStatus || state.openReportCriteria.needsReplyOnly);
   return `
     ${embeddedBanner()}
     <section class="panel">
@@ -494,12 +526,20 @@ function openReportView() {
         </div>
         <div class="form-grid" style="margin-top:14px">
           ${inputField("reportMaxPages", "Search limit: Chatwoot API pages", state.openReportCriteria.maxPages || "20", "number")}
+          ${inputField("reportReplyCheckLimit", "Sales reply check limit", state.openReportCriteria.replyCheckLimit || "100", "number")}
         </div>
         <label class="field checkbox-field">
           <span><input type="checkbox" id="reportUnreadOnly" ${state.openReportCriteria.unreadOnly ? "checked" : ""}> ${tr("Unread only")}</span>
         </label>
+        <label class="field checkbox-field">
+          <span><input type="checkbox" id="reportIncludeReplyStatus" ${state.openReportCriteria.includeReplyStatus ? "checked" : ""}> ${tr("Check sales reply status")}</span>
+        </label>
+        <label class="field checkbox-field">
+          <span><input type="checkbox" id="reportNeedsReplyOnly" ${state.openReportCriteria.needsReplyOnly ? "checked" : ""}> ${tr("Only customers needing a sales reply")}</span>
+        </label>
         <p class="notice">${tr("Leave empty to include all.")} ${tr("Chatwoot sends results in pages. 20 means scan up to 20 API pages, then stop for safety. This does not execute anything.")}</p>
         <p class="notice">${tr("Unread filtering is applied locally after Chatwoot returns conversations, so increase the page limit if you expect many open conversations.")}</p>
+        <p class="notice">${tr("Sales reply checking reads messages inside each conversation, so start with a small limit and increase it after the report looks correct.")}</p>
         <div class="actions">
           <button class="button" data-action="load-open-report">${tr("Run open report")}</button>
         </div>
@@ -515,6 +555,13 @@ function openReportView() {
       ${stat("assignedUnreadCount", totals.assignedUnreadCount ?? "-")}
       ${stat("unassignedUnreadCount", totals.unassignedUnreadCount ?? "-")}
     </div>
+    ${showReplyStats ? `
+      <div class="grid three" style="margin-top:16px">
+        ${stat("Needs sales reply", totals.needsReplyCount ?? "-")}
+        ${stat("Replied by sales", totals.repliedCount ?? "-")}
+        ${stat("Reply status unknown", totals.replyUnknownCount ?? "-")}
+      </div>
+    ` : ""}
     ${openReportTables()}
   `;
 }
@@ -522,6 +569,8 @@ function openReportView() {
 function openReportTables() {
   if (!state.openReport) return `<section class="panel" style="margin-top:16px"><div class="panel-body"><p class="notice">${tr("Run the report first.")}</p></div></section>`;
   const warnings = (state.openReport.warnings || []).map(item => `<p class="notice warn">${escapeHtml(item)}</p>`).join("");
+  const includeReplyStatus = Boolean(state.openReport.criteria?.includeReplyStatus);
+  const localizeRows = rows => includeReplyStatus ? rows.map(localizeReplyRow) : rows;
   const unassignedByInbox = state.openReport.inboxes
     .map(row => ({
       inboxName: row.inboxName,
@@ -538,6 +587,18 @@ function openReportTables() {
       openCount: row.openCount
     }))
     .sort((a, b) => Number(b.unreadCount || 0) - Number(a.unreadCount || 0) || String(a.inboxName).localeCompare(String(b.inboxName)));
+  const inboxSummaryColumns = includeReplyStatus
+    ? ["inboxName", "inboxId", "openCount", "unreadCount", "needsReplyCount", "repliedCount", "replyUnknownCount", "assignedCount", "unassignedCount"]
+    : ["inboxName", "inboxId", "openCount", "unreadCount", "assignedCount", "unassignedCount"];
+  const agentSummaryColumns = includeReplyStatus
+    ? ["agentName", "agentId", "openCount", "unreadCount", "needsReplyCount", "repliedCount", "replyUnknownCount"]
+    : ["agentName", "agentId", "openCount", "unreadCount"];
+  const conversationColumns = includeReplyStatus
+    ? ["conversationId", "inboxName", "contactName", "assigneeName", "replyStatus", "lastCustomerMessageAt", "lastSalesReplyAt", "lastSalesReplyBy", "unreadCount", "status", "source"]
+    : ["conversationId", "inboxName", "contactName", "assigneeName", "unreadCount", "status", "source"];
+  const unassignedColumns = includeReplyStatus
+    ? ["conversationId", "inboxName", "contactName", "replyStatus", "lastCustomerMessageAt", "lastSalesReplyAt", "unreadCount", "status", "source"]
+    : ["conversationId", "inboxName", "contactName", "unreadCount", "status", "source"];
   return `
     ${warnings}
     <section class="panel" style="margin-top:16px">
@@ -561,24 +622,30 @@ function openReportTables() {
     <div class="grid two" style="margin-top:16px">
       <section class="panel">
         <div class="panel-header"><h2>${tr("Inbox summary")}</h2></div>
-        <div class="panel-body">${simpleTable(state.openReport.inboxes, ["inboxName", "inboxId", "openCount", "unreadCount", "assignedCount", "unassignedCount"])}</div>
+        <div class="panel-body">${simpleTable(state.openReport.inboxes, inboxSummaryColumns)}</div>
       </section>
       <section class="panel">
         <div class="panel-header"><h2>${tr("Agent summary")}</h2></div>
-        <div class="panel-body">${simpleTable(state.openReport.agents, ["agentName", "agentId", "openCount", "unreadCount"])}</div>
+        <div class="panel-body">${simpleTable(state.openReport.agents, agentSummaryColumns)}</div>
       </section>
     </div>
+    ${includeReplyStatus ? `
+      <section class="panel" style="margin-top:16px">
+        <div class="panel-header"><h2>${tr("Customers needing reply")}</h2></div>
+        <div class="panel-body">${simpleTable(localizeRows((state.openReport.selectedAgentNeedsReply || state.openReport.needsReply || []).slice(0, 200)), ["conversationId", "inboxName", "contactName", "assigneeName", "replyStatus", "lastCustomerMessageAt", "lastSalesReplyAt", "lastSalesReplyBy", "unreadCount"])}</div>
+      </section>
+    ` : ""}
     <section class="panel" style="margin-top:16px">
       <div class="panel-header"><h2>${tr("Unassigned conversations")}</h2></div>
-      <div class="panel-body">${simpleTable(state.openReport.unassigned.slice(0, 200), ["conversationId", "inboxName", "contactName", "unreadCount", "status", "source"])}</div>
+      <div class="panel-body">${simpleTable(localizeRows(state.openReport.unassigned.slice(0, 200)), unassignedColumns)}</div>
     </section>
     <section class="panel" style="margin-top:16px">
       <div class="panel-header"><h2>${tr("Unread conversation list")}</h2></div>
-      <div class="panel-body">${simpleTable((state.openReport.unread || []).slice(0, 200), ["conversationId", "inboxName", "contactName", "assigneeName", "unreadCount", "status", "source"])}</div>
+      <div class="panel-body">${simpleTable(localizeRows((state.openReport.unread || []).slice(0, 200)), conversationColumns)}</div>
     </section>
     <section class="panel" style="margin-top:16px">
       <div class="panel-header"><h2>${tr("Open conversation list")}</h2></div>
-      <div class="panel-body">${simpleTable(state.openReport.conversations.slice(0, 200), ["conversationId", "inboxName", "contactName", "assigneeName", "unreadCount", "status", "source"])}</div>
+      <div class="panel-body">${simpleTable(localizeRows(state.openReport.conversations.slice(0, 200)), conversationColumns)}</div>
     </section>
   `;
 }
@@ -663,6 +730,15 @@ function localizePhoneRow(row) {
     ...row,
     matchStatus: row.matchStatus ? tr(row.matchStatus) : "",
     reason: row.reason ? tr(row.reason) : ""
+  };
+}
+
+function localizeReplyRow(row) {
+  return {
+    ...row,
+    needsReply: row.needsReply === undefined ? "" : tr(row.needsReply ? "Yes" : "No"),
+    replyStatus: row.replyStatus ? tr(row.replyStatus) : "",
+    lastMessageDirection: row.lastMessageDirection ? tr(row.lastMessageDirection) : ""
   };
 }
 
@@ -910,6 +986,9 @@ async function loadOpenReport() {
     inboxIds: checkedValues("reportInboxIds"),
     agentIds: checkedValues("reportAgentIds"),
     unreadOnly: Boolean(document.getElementById("reportUnreadOnly")?.checked),
+    includeReplyStatus: Boolean(document.getElementById("reportIncludeReplyStatus")?.checked || document.getElementById("reportNeedsReplyOnly")?.checked),
+    needsReplyOnly: Boolean(document.getElementById("reportNeedsReplyOnly")?.checked),
+    replyCheckLimit: Number(value("reportReplyCheckLimit") || 100),
     maxPages: Number(value("reportMaxPages") || 20)
   };
   state.openReportCriteria = criteria;
