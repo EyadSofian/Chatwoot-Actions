@@ -746,6 +746,8 @@ function conversationToPreviewItem(conversation, criteria, source) {
   const team = conversation?.meta?.team || conversation?.team || {};
   const inbox = conversation?.inbox || conversation?.meta?.inbox || {};
   const inboxId = getConversationInboxId(conversation);
+  const phoneNumber = sender.phone_number || "";
+  const contactName = sender.name || "";
 
   return {
     type: "conversation",
@@ -758,13 +760,18 @@ function conversationToPreviewItem(conversation, criteria, source) {
     teamId: team.id || conversation.team_id || null,
     teamName: team.name || "",
     contactId: sender.id || conversation.contact_id || null,
-    contactName: sender.name || "",
-    phoneNumber: sender.phone_number || "",
+    contactName,
+    phoneNumber,
+    contactDisplay: contactDisplay(contactName, phoneNumber),
     assigneeId: assignee.id || null,
     assigneeName: assignee.name || "",
     targetAgentId: criteria.targetAgentId || null,
     targetTeamId: criteria.targetTeamId || null
   };
+}
+
+function contactDisplay(name, phoneNumber) {
+  return [name, phoneNumber].filter(Boolean).join(" - ");
 }
 
 function getConversationInboxId(conversation) {

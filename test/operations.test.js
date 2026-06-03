@@ -152,7 +152,7 @@ test("getOpenConversationReport can filter unread conversations locally", async 
             unread_count: 2,
             inbox_id: 2,
             meta: {
-              sender: { id: 10, name: "Ahmed" },
+              sender: { id: 10, name: "Ahmed", phone_number: "+966558262332" },
               assignee: { id: 4, name: "Old Agent" },
               inbox: { id: 2, name: "WhatsApp" }
             }
@@ -163,7 +163,7 @@ test("getOpenConversationReport can filter unread conversations locally", async 
             unread_count: 0,
             inbox_id: 2,
             meta: {
-              sender: { id: 11, name: "Sara" },
+              sender: { id: 11, name: "Sara", phone_number: "+966566969482" },
               assignee: null,
               inbox: { id: 2, name: "WhatsApp" }
             }
@@ -197,6 +197,8 @@ test("getOpenConversationReport can filter unread conversations locally", async 
     assert.equal(report.totals.unassignedUnreadCount, 0);
     assert.equal(report.conversations[0].conversationId, 33);
     assert.equal(report.conversations[0].unreadCount, 2);
+    assert.equal(report.conversations[0].phoneNumber, "+966558262332");
+    assert.equal(report.conversations[0].contactDisplay, "Ahmed - +966558262332");
     assert.equal(report.unread.length, 1);
     assert.equal(report.inboxes[0].unreadCount, 1);
     assert.equal(report.agents[0].unreadCount, 1);

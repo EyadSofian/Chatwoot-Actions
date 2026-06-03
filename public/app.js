@@ -279,6 +279,9 @@ const translations = {
     "sales": "سيلز",
     "Yes": "نعم",
     "No": "لا",
+    "Download report CSV": "تحميل التقرير CSV",
+    "No report to download.": "لا يوجد تقرير لتحميله.",
+    "Report CSV downloaded.": "تم تحميل التقرير CSV.",
     "Also reassign conversations for these customers": "حوّل محادثات العملاء دول كمان",
     "Tip: start with Open conversations and a small page limit. After Preview looks correct, increase the limit and execute.": "نصيحة: ابدأ بالمحادثات المفتوحة وحد صفحات صغير. بعد ما المعاينة تبقى مظبوطة، زود الحد ونفذ.",
     "Select agent": "اختار موظف",
@@ -310,6 +313,7 @@ const translations = {
     "inboxName": "اسم الإنبوكس",
     "contactId": "رقم العميل",
     "contactName": "اسم العميل",
+    "contactDisplay": "العميل / الرقم",
     "status": "الحالة",
     "assigneeName": "الموظف",
     "source": "المصدر",
@@ -542,6 +546,7 @@ function openReportView() {
         <p class="notice">${tr("Sales reply checking reads messages inside each conversation, so start with a small limit and increase it after the report looks correct.")}</p>
         <div class="actions">
           <button class="button" data-action="load-open-report">${tr("Run open report")}</button>
+          <button class="button secondary" data-action="export-open-report" ${report?.conversations?.length ? "" : "disabled"}>${tr("Download report CSV")}</button>
         </div>
       </div>
     </section>
@@ -594,11 +599,11 @@ function openReportTables() {
     ? ["agentName", "agentId", "openCount", "unreadCount", "needsReplyCount", "repliedCount", "replyUnknownCount"]
     : ["agentName", "agentId", "openCount", "unreadCount"];
   const conversationColumns = includeReplyStatus
-    ? ["conversationId", "inboxName", "contactName", "assigneeName", "replyStatus", "lastCustomerMessageAt", "lastSalesReplyAt", "lastSalesReplyBy", "unreadCount", "status", "source"]
-    : ["conversationId", "inboxName", "contactName", "assigneeName", "unreadCount", "status", "source"];
+    ? ["conversationId", "inboxName", "contactDisplay", "assigneeName", "replyStatus", "lastCustomerMessageAt", "lastSalesReplyAt", "lastSalesReplyBy", "unreadCount", "status", "source"]
+    : ["conversationId", "inboxName", "contactDisplay", "assigneeName", "unreadCount", "status", "source"];
   const unassignedColumns = includeReplyStatus
-    ? ["conversationId", "inboxName", "contactName", "replyStatus", "lastCustomerMessageAt", "lastSalesReplyAt", "unreadCount", "status", "source"]
-    : ["conversationId", "inboxName", "contactName", "unreadCount", "status", "source"];
+    ? ["conversationId", "inboxName", "contactDisplay", "replyStatus", "lastCustomerMessageAt", "lastSalesReplyAt", "unreadCount", "status", "source"]
+    : ["conversationId", "inboxName", "contactDisplay", "unreadCount", "status", "source"];
   return `
     ${warnings}
     <section class="panel" style="margin-top:16px">
@@ -632,7 +637,7 @@ function openReportTables() {
     ${includeReplyStatus ? `
       <section class="panel" style="margin-top:16px">
         <div class="panel-header"><h2>${tr("Customers needing reply")}</h2></div>
-        <div class="panel-body">${simpleTable(localizeRows((state.openReport.selectedAgentNeedsReply || state.openReport.needsReply || []).slice(0, 200)), ["conversationId", "inboxName", "contactName", "assigneeName", "replyStatus", "lastCustomerMessageAt", "lastSalesReplyAt", "lastSalesReplyBy", "unreadCount"])}</div>
+        <div class="panel-body">${simpleTable(localizeRows((state.openReport.selectedAgentNeedsReply || state.openReport.needsReply || []).slice(0, 200)), ["conversationId", "inboxName", "contactDisplay", "assigneeName", "replyStatus", "lastCustomerMessageAt", "lastSalesReplyAt", "lastSalesReplyBy", "unreadCount"])}</div>
       </section>
     ` : ""}
     <section class="panel" style="margin-top:16px">
@@ -924,6 +929,7 @@ async function runAction(action) {
   if (action === "preview-bulk") return previewBulk();
   if (action === "execute-bulk") return executeBulk();
   if (action === "load-open-report") return loadOpenReport();
+  if (action === "export-open-report") return exportOpenReport();
   if (action === "preview-phone-assign") return previewPhoneAssign();
   if (action === "execute-phone-assign") return executePhoneAssign();
   if (action === "load-reports") return loadReports();
@@ -997,6 +1003,39 @@ async function loadOpenReport() {
     criteria
   });
   render();
+}
+
+function exportOpenReport() {
+  if (!state.openReport?.conversations?.length) {
+    return notify(tr("No report to download."), "warn");
+  }
+
+  const rows = openReportExportRows(state.openReport);
+  const fileName = `chatwoot-open-report-${new Date().toISOString().slice(0, 10)}.csv`;
+  downloadCsv(fileName, rows);
+  notify(tr("Report CSV downloaded."), "ok");
+}
+
+function openReportExportRows(report) {
+  return (report.conversations || []).map(row => ({
+    conversationId: row.conversationId,
+    inboxName: row.inboxName,
+    inboxId: row.inboxId,
+    contactDisplay: row.contactDisplay,
+    contactName: row.contactName,
+    phoneNumber: row.phoneNumber,
+    contactId: row.contactId,
+    assigneeName: row.assigneeName,
+    assigneeId: row.assigneeId,
+    status: row.status,
+    unreadCount: row.unreadCount,
+    replyStatus: row.replyStatus ? tr(row.replyStatus) : "",
+    needsReply: row.needsReply === undefined ? "" : tr(row.needsReply ? "Yes" : "No"),
+    lastCustomerMessageAt: row.lastCustomerMessageAt || "",
+    lastSalesReplyAt: row.lastSalesReplyAt || "",
+    lastSalesReplyBy: row.lastSalesReplyBy || "",
+    source: row.source
+  }));
 }
 
 async function handlePhoneFile(file) {
@@ -1371,6 +1410,34 @@ function simpleTable(rows, keys, extraCell) {
       </table>
     </div>
   `;
+}
+
+function downloadCsv(fileName, rows) {
+  const blob = new Blob([`\uFEFF${toCsv(rows)}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function toCsv(rows) {
+  if (!rows || rows.length === 0) return "";
+  const headers = [...new Set(rows.flatMap(row => Object.keys(row)))];
+  return [
+    headers.join(","),
+    ...rows.map(row => headers.map(header => csvCell(row[header])).join(","))
+  ].join("\n");
+}
+
+function csvCell(value) {
+  if (value === undefined || value === null) return "";
+  const text = String(value);
+  if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  return text;
 }
 
 function stat(label, value) {
