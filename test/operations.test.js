@@ -489,7 +489,7 @@ test("handleDepartmentRouterWebhook routes choice 1 to an online sales team inbo
   }
 });
 
-test("handleDepartmentRouterWebhook sends the department menu for a new conversation", async () => {
+test("handleDepartmentRouterWebhook waits for the first incoming message before prompting a new contact", async () => {
   let customAttributesBody = null;
   let assignmentBody = null;
   const outgoingMessages = [];
@@ -502,10 +502,19 @@ test("handleDepartmentRouterWebhook sends the department menu for a new conversa
         id: 33,
         status: "open",
         inbox_id: 2,
+        contact_id: 10,
         custom_attributes: {},
         meta: {
+          sender: { id: 10, name: "New Contact" },
           assignee: { id: 4, name: "Temporary Agent" }
         }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10/conversations") {
+      res.end(JSON.stringify({
+        payload: [{ id: 33, status: "open", inbox_id: 2 }]
       }));
       return;
     }
@@ -536,11 +545,7 @@ test("handleDepartmentRouterWebhook sends the department menu for a new conversa
   try {
     const { port } = server.address();
     const stateStore = createMemoryDepartmentStateStore();
-    const result = await handleDepartmentRouterWebhook({
-      event: "conversation_created",
-      id: 33,
-      inbox_id: 2
-    }, {
+    const options = {
       connection: {
         baseUrl: `http://127.0.0.1:${port}`,
         accountId: "1",
@@ -552,16 +557,97 @@ test("handleDepartmentRouterWebhook sends the department menu for a new conversa
       operationsTeamId: "3",
       stateStore,
       audit: false
-    });
+    };
+    const created = await handleDepartmentRouterWebhook({
+      event: "conversation_created",
+      id: 33,
+      inbox_id: 2
+    }, options);
 
-    assert.equal(result.handled, true);
-    assert.equal(result.action, "department_prompt_sent");
+    assert.equal(created.handled, true);
+    assert.equal(created.action, "new_conversation_registered");
+    assert.equal(outgoingMessages.length, 0);
+    assert.equal(assignmentBody, null);
+    assert.equal((await stateStore.get(33)).state, "new_waiting_incoming");
+
+    const incoming = reopenPayload();
+    incoming.message.content = "السلام عليكم";
+    const prompted = await handleDepartmentRouterWebhook(incoming, options);
+
+    assert.equal(prompted.action, "department_prompt_sent");
     assert.equal(outgoingMessages.length, 1);
     assert.match(outgoingMessages[0].content, /اكتب 1/);
     assert.match(outgoingMessages[0].content, /اكتب 2/);
     assert.deepEqual(assignmentBody, { assignee_id: null });
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "pending");
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_prompt_next, false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook never prompts a contact with previous conversations", async () => {
+  let writeCalls = 0;
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        contact_id: 10,
+        custom_attributes: {},
+        meta: { sender: { id: 10, name: "Existing Contact" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10/conversations") {
+      res.end(JSON.stringify({
+        payload: [
+          { id: 12, status: "resolved", inbox_id: 2 },
+          { id: 33, status: "open", inbox_id: 2 }
+        ]
+      }));
+      return;
+    }
+
+    writeCalls += 1;
+    res.end(JSON.stringify({ ok: true }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore();
+    const options = {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    };
+    const created = await handleDepartmentRouterWebhook({
+      event: "conversation_created",
+      id: 33,
+      inbox_id: 2
+    }, options);
+    const incoming = reopenPayload();
+    incoming.message.content = "السلام عليكم";
+    const replied = await handleDepartmentRouterWebhook(incoming, options);
+
+    assert.equal(created.reason, "existing_contact_has_history");
+    assert.equal(replied.reason, "existing_department_unknown");
+    assert.equal(writeCalls, 0);
+    assert.equal((await stateStore.get(33)).state, "existing_contact");
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -615,6 +701,7 @@ test("handleDepartmentRouterWebhook marks resolved conversations to prompt on th
       inboxIds: ["2"],
       salesTeamId: "4",
       operationsTeamId: "3",
+      promptOnResolved: true,
       stateStore,
       audit: false
     });
@@ -670,7 +757,7 @@ test("handleDepartmentRouterWebhook ignores old open conversations with no known
     });
 
     assert.equal(result.skipped, true);
-    assert.equal(result.reason, "existing_department_unknown");
+    assert.equal(result.reason, "contact_id_unavailable");
     assert.equal(writeCalls, 0);
   } finally {
     await new Promise(resolve => server.close(resolve));

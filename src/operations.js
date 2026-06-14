@@ -519,7 +519,7 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
           inboxId
         };
       }
-      return promptForDepartment(client, conversation, config, { reason: "new_conversation" });
+      return registerNewConversationForDepartmentPrompt(client, conversation, config);
     }
 
     if (!eventName.includes("message_created") || !isIncomingWebhookMessage(payload, message)) {
@@ -554,11 +554,15 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
       return promptForDepartment(client, conversation, config, { reason: "customer_requested_change", force: true });
     }
 
-    if (promptNext) {
+    if (promptNext && config.promptOnResolved) {
       return promptForDepartment(client, conversation, config, { reason: "resolved_conversation_reopened", force: true });
     }
 
     const selection = parseDepartmentSelection(content);
+    if (routeState === "new_waiting_incoming") {
+      return promptForDepartment(client, conversation, config, { reason: "first_incoming_message" });
+    }
+
     if (routeState === "pending") {
       if (selection) {
         return routeConversationToDepartment(client, conversation, config, selection, "customer_selection");
@@ -576,6 +580,14 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
     const knownDepartment = getKnownConversationDepartment(conversation, config, localRoute);
     if (knownDepartment) {
       return routeConversationToDepartment(client, conversation, config, knownDepartment, "existing_department");
+    }
+
+    if (!routeState && config.promptOnNew && config.newContactsOnly) {
+      const registration = await registerNewConversationForDepartmentPrompt(client, conversation, config);
+      if (registration.action === "new_conversation_registered") {
+        return promptForDepartment(client, conversation, config, { reason: "first_incoming_message" });
+      }
+      return registration;
     }
 
     return {
@@ -596,7 +608,8 @@ function buildDepartmentRouterConfig(options = {}) {
     salesTeamId: String(options.salesTeamId ?? process.env.DEPARTMENT_ROUTER_SALES_TEAM_ID ?? ""),
     operationsTeamId: String(options.operationsTeamId ?? process.env.DEPARTMENT_ROUTER_OPERATIONS_TEAM_ID ?? ""),
     promptOnNew: parseBooleanOption(options.promptOnNew, process.env.DEPARTMENT_ROUTER_PROMPT_ON_NEW, true),
-    promptOnResolved: parseBooleanOption(options.promptOnResolved, process.env.DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED, true),
+    promptOnResolved: parseBooleanOption(options.promptOnResolved, process.env.DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED, false),
+    newContactsOnly: parseBooleanOption(options.newContactsOnly, process.env.DEPARTMENT_ROUTER_NEW_CONTACTS_ONLY, true),
     confirmSelection: parseBooleanOption(options.confirmSelection, process.env.DEPARTMENT_ROUTER_CONFIRM_SELECTION, true),
     promptText: String(options.promptText ?? process.env.DEPARTMENT_ROUTER_PROMPT_TEXT ??
       "أهلاً بك مع فريق Engosoft.\nللتواصل مع فريق المبيعات اكتب 1.\nللتواصل مع فريق العمليات اكتب 2."),
@@ -622,6 +635,95 @@ async function loadDepartmentConversation(client, payload, message, conversation
     if (conversation) return conversation;
     throw error;
   }
+}
+
+async function registerNewConversationForDepartmentPrompt(client, conversation, config) {
+  const conversationId = conversation.id;
+  const inboxId = getConversationInboxId(conversation);
+  const history = await inspectContactConversationHistory(client, conversation);
+
+  if (!history.canVerify) {
+    await config.stateStore.save(conversationId, {
+      inboxId,
+      state: "history_unverified",
+      contactId: history.contactId || null
+    });
+    return {
+      ok: true,
+      handled: true,
+      skipped: true,
+      reason: history.reason,
+      conversationId,
+      inboxId
+    };
+  }
+
+  if (config.newContactsOnly && history.previousConversationCount > 0) {
+    await config.stateStore.save(conversationId, {
+      inboxId,
+      state: "existing_contact",
+      contactId: history.contactId,
+      previousConversationCount: history.previousConversationCount
+    });
+    return {
+      ok: true,
+      handled: true,
+      skipped: true,
+      reason: "existing_contact_has_history",
+      conversationId,
+      inboxId,
+      previousConversationCount: history.previousConversationCount
+    };
+  }
+
+  await config.stateStore.save(conversationId, {
+    inboxId,
+    state: "new_waiting_incoming",
+    contactId: history.contactId,
+    previousConversationCount: history.previousConversationCount
+  });
+  return {
+    ok: true,
+    handled: true,
+    action: "new_conversation_registered",
+    conversationId,
+    inboxId,
+    previousConversationCount: history.previousConversationCount
+  };
+}
+
+async function inspectContactConversationHistory(client, conversation) {
+  const contactId = getConversationContactId(conversation);
+  if (!contactId) {
+    return { canVerify: false, reason: "contact_id_unavailable", contactId: null, previousConversationCount: 0 };
+  }
+
+  try {
+    const response = await client.contactConversations(contactId);
+    const previousConversations = getPayload(response).filter(item => String(item.id) !== String(conversation.id));
+    return {
+      canVerify: true,
+      reason: "",
+      contactId,
+      previousConversationCount: previousConversations.length
+    };
+  } catch (error) {
+    return {
+      canVerify: false,
+      reason: "contact_history_unavailable",
+      contactId,
+      previousConversationCount: 0,
+      error: error.message
+    };
+  }
+}
+
+function getConversationContactId(conversation) {
+  return conversation?.contact_id ||
+    conversation?.contact?.id ||
+    conversation?.meta?.sender?.id ||
+    conversation?.sender?.id ||
+    null;
 }
 
 async function promptForDepartment(client, conversation, config, { reason, force = false } = {}) {

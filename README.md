@@ -129,7 +129,8 @@ DEPARTMENT_ROUTER_INBOX_IDS=27
 DEPARTMENT_ROUTER_SALES_TEAM_ID=4
 DEPARTMENT_ROUTER_OPERATIONS_TEAM_ID=3
 DEPARTMENT_ROUTER_PROMPT_ON_NEW=true
-DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED=true
+DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED=false
+DEPARTMENT_ROUTER_NEW_CONTACTS_ONLY=true
 DEPARTMENT_ROUTER_CONFIRM_SELECTION=true
 ```
 
@@ -145,8 +146,9 @@ The parser accepts `1`, Arabic `١`, Sales/مبيعات/سيلز and `2`, Arabic
 
 Behavior:
 
-- New conversation: send the menu once.
-- Resolved conversation: mark it to show the menu on the customer's next message.
+- New conversation: register it without sending anything. Send the menu once only after the first incoming customer message opens the WhatsApp service window.
+- Existing contact with any previous Chatwoot conversation: never send the department menu.
+- Resolved conversation: do not show the menu again by default. `DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED` must be explicitly enabled to change this.
 - While waiting for the department choice, remove any temporary agent assignment so the conversation cannot be handled by the wrong department.
 - Old open conversation already assigned to Sales Team `4` or Operations Team `3`: keep the same department and only move it when the current agent is not an eligible online team/inbox member.
 - Old open conversation with no known Sales/Operations team: do nothing. Never send the menu just because an old conversation has no saved department.
