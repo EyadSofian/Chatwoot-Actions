@@ -138,6 +138,25 @@ DEPARTMENT_ROUTER_ASSIGN_AGENT=false
 
 `DEPARTMENT_ROUTER_ASSIGN_AGENT=false` makes the router send the menu and, after the customer picks `1` or `2`, assign the conversation to the chosen team **without** assigning a specific agent. The conversation stays Unassigned so the team's agents pick it up themselves. The Chatwoot assignments endpoint ignores `team_id` when `assignee_id` is present, so the router sets the team and clears the assignee in two separate calls. With the default `true`, the router instead assigns an online member of the team and inbox.
 
+### Business hours
+
+To switch behavior by time of day, enable business hours:
+
+```text
+DEPARTMENT_ROUTER_BUSINESS_HOURS_ENABLED=true
+DEPARTMENT_ROUTER_BUSINESS_TIMEZONE=Africa/Cairo
+DEPARTMENT_ROUTER_BUSINESS_START=09:00
+DEPARTMENT_ROUTER_BUSINESS_END=22:00
+DEPARTMENT_ROUTER_BUSINESS_DAYS=0,1,2,3,4,5,6
+```
+
+When enabled, the menu is always sent, but the assignment depends on the clock in the configured timezone:
+
+- **Inside** business hours: assign an online member of the team and inbox (falling back to the team queue if none are online).
+- **Outside** business hours: route to the chosen team and leave the conversation Unassigned for the team to pick up.
+
+Business hours override `DEPARTMENT_ROUTER_ASSIGN_AGENT`. `DEPARTMENT_ROUTER_BUSINESS_DAYS` uses `0=Sunday … 6=Saturday`; omit a day to mark it fully closed. The timezone must be an IANA name (e.g. `Africa/Cairo`) so daylight saving is handled correctly.
+
 Default customer menu:
 
 ```text

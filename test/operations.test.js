@@ -7,6 +7,7 @@ import {
   getOpenConversationReport,
   handleDepartmentRouterWebhook,
   handleReopenRouterWebhook,
+  isWithinBusinessHours,
   normalizePhone,
   parseDepartmentSelection,
   parsePhoneAssignInput
@@ -39,6 +40,25 @@ test("parseDepartmentSelection understands numeric, Arabic, and English replies"
   assert.equal(parseDepartmentSelection("٢"), "operations");
   assert.equal(parseDepartmentSelection("Operations"), "operations");
   assert.equal(parseDepartmentSelection("محتاج مساعدة"), null);
+});
+
+test("isWithinBusinessHours respects timezone, time range, and working days", () => {
+  const base = {
+    enabled: true,
+    timezone: "Asia/Riyadh", // UTC+3, no daylight saving
+    startMinutes: 9 * 60,
+    endMinutes: 22 * 60,
+    days: new Set([0, 1, 2, 3, 4, 5, 6])
+  };
+
+  // 10:00Z -> 13:00 Riyadh -> inside 09:00-22:00
+  assert.equal(isWithinBusinessHours(base, new Date("2026-06-14T10:00:00Z")), true);
+  // 20:00Z -> 23:00 Riyadh -> outside
+  assert.equal(isWithinBusinessHours(base, new Date("2026-06-14T20:00:00Z")), false);
+  // No working days configured -> always outside
+  assert.equal(isWithinBusinessHours({ ...base, days: new Set() }, new Date("2026-06-14T10:00:00Z")), false);
+  // Disabled -> always treated as within hours
+  assert.equal(isWithinBusinessHours({ enabled: false }, new Date("2026-06-14T20:00:00Z")), true);
 });
 
 test("buildPhoneAssignPreview matches phone contacts and conversations", async () => {
@@ -484,6 +504,84 @@ test("handleDepartmentRouterWebhook routes choice 1 to an online sales team inbo
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "routed");
     assert.equal(outgoingMessages.length, 1);
     assert.match(outgoingMessages[0].content, /المبيعات/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook routes to the team unassigned outside business hours", async () => {
+  const assignmentBodies = [];
+  let teamAgentsCalled = false;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: { engosoft_department_route_state: "pending" },
+        meta: { sender: { id: 10, name: "Ahmed" }, assignee: null, inbox: { id: 2, name: "WhatsApp" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/teams/4/team_members") {
+      teamAgentsCalled = true;
+      res.end(JSON.stringify([{ id: 7, name: "Sales", availability_status: "online" }]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentBodies.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      const body = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: body.custom_attributes }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      res.end(JSON.stringify({ id: 503 }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore({ 33: { conversationId: 33, state: "pending" } });
+    const payload = reopenPayload();
+    payload.message.content = "1";
+    const result = await handleDepartmentRouterWebhook(payload, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      // assignAgent default true, but business hours override forces team-only outside hours.
+      businessHours: {
+        enabled: true,
+        timezone: "Asia/Riyadh",
+        startMinutes: 9 * 60,
+        endMinutes: 22 * 60,
+        days: new Set([0, 1, 2, 3, 4, 5, 6]),
+        now: () => new Date("2026-06-14T20:00:00Z") // 23:00 Riyadh -> outside
+      },
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.action, "department_team_unassigned");
+    assert.deepEqual(assignmentBodies, [{ team_id: 4 }]);
+    assert.equal(teamAgentsCalled, false);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
