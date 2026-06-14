@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { appendAudit, appendWebhookEvent, createCampaign, readCollection, updateCampaignFromWebhook } from "./store.js";
 import { toCsv } from "./exporters.js";
+import { verifyChatwootWebhookSignature } from "./webhookSecurity.js";
 import {
   buildBulkPreview,
   buildPhoneAssignPreview,
@@ -39,12 +40,8 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (!isAuthorized(req)) {
-      res.writeHead(401, {
-        "www-authenticate": 'Basic realm="Chatwoot Ops Console"',
-        "content-type": "text/plain; charset=utf-8"
-      });
-      res.end("Authentication required");
+    if (!isWebhookRoute(req) && !isAuthorized(req)) {
+      sendUnauthorized(res);
       return;
     }
     await route(req, res);
@@ -62,9 +59,15 @@ server.listen(port, host, () => {
 
 function isAuthorized(req) {
   if (isWebhookSecretAuthorized(req)) return true;
+  if (isBasicAuthorized(req)) return true;
 
   const password = process.env.OPS_PASSWORD;
-  if (!password) return true;
+  return !password;
+}
+
+function isBasicAuthorized(req) {
+  const password = process.env.OPS_PASSWORD;
+  if (!password) return false;
 
   const username = process.env.OPS_USERNAME || "admin";
   const header = req.headers.authorization || "";
@@ -80,16 +83,47 @@ function isAuthorized(req) {
   return requestUsername === username && requestPassword === password;
 }
 
+function isWebhookRoute(req) {
+  if (!req.url) return false;
+  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  return req.method === "POST" && url.pathname === "/api/webhooks/chatwoot";
+}
+
+function isWebhookAuthorized(req, rawBody) {
+  const hasPassword = Boolean(process.env.OPS_PASSWORD);
+  const hasWebhookSecret = Boolean(getWebhookSecret());
+  if (isWebhookSecretAuthorized(req) || isWebhookSignatureAuthorized(req, rawBody) || isBasicAuthorized(req)) return true;
+  return !hasPassword && !hasWebhookSecret;
+}
+
 function isWebhookSecretAuthorized(req) {
-  const secret = process.env.WEBHOOK_SECRET || process.env.CHATWOOT_WEBHOOK_SECRET;
+  const secret = getWebhookSecret();
   if (!secret || !req.url) return false;
 
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   if (url.pathname !== "/api/webhooks/chatwoot") return false;
 
-  const suppliedSecret = req.headers["x-chatwoot-ops-secret"] || req.headers["x-webhook-secret"] ||
+  const suppliedSecret = getFirstHeader(req.headers["x-chatwoot-ops-secret"]) || getFirstHeader(req.headers["x-webhook-secret"]) ||
     url.searchParams.get("secret") || url.searchParams.get("token");
   return suppliedSecret === secret;
+}
+
+function isWebhookSignatureAuthorized(req, rawBody) {
+  return verifyChatwootWebhookSignature({
+    secret: getWebhookSecret(),
+    signature: getFirstHeader(req.headers["x-chatwoot-signature"]),
+    timestamp: getFirstHeader(req.headers["x-chatwoot-timestamp"]),
+    rawBody,
+    maxAgeSeconds: Number(process.env.WEBHOOK_MAX_AGE_SECONDS || 0)
+  });
+}
+
+function getWebhookSecret() {
+  return process.env.WEBHOOK_SECRET || process.env.CHATWOOT_WEBHOOK_SECRET;
+}
+
+function getFirstHeader(value) {
+  return Array.isArray(value) ? value[0] : value;
 }
 
 async function route(req, res) {
@@ -161,7 +195,13 @@ async function route(req, res) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/webhooks/chatwoot") {
-    const body = await readJsonBody(req);
+    const rawBody = await readRawBody(req);
+    if (!isWebhookAuthorized(req, rawBody)) {
+      sendUnauthorized(res);
+      return;
+    }
+
+    const body = parseJsonBody(rawBody);
     let router = null;
     try {
       router = await handleReopenRouterWebhook(body);
@@ -244,9 +284,17 @@ async function serveStatic(pathname, res) {
 }
 
 async function readJsonBody(req) {
+  return parseJsonBody(await readRawBody(req));
+}
+
+async function readRawBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
-  const text = Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
+}
+
+function parseJsonBody(rawBody) {
+  const text = Buffer.isBuffer(rawBody) ? rawBody.toString("utf8") : String(rawBody || "");
   if (!text) return {};
   try {
     return JSON.parse(text);
@@ -255,6 +303,14 @@ async function readJsonBody(req) {
     error.status = 400;
     throw error;
   }
+}
+
+function sendUnauthorized(res) {
+  res.writeHead(401, {
+    "www-authenticate": 'Basic realm="Chatwoot Ops Console"',
+    "content-type": "text/plain; charset=utf-8"
+  });
+  res.end("Authentication required");
 }
 
 function sendJson(res, status, data) {

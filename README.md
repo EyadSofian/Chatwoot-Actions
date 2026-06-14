@@ -73,7 +73,9 @@ https://your-ops-console.example.com/api/webhooks/chatwoot
 
 Subscribe at least to `message_created`, `message_updated`, `conversation_updated`, and `contact_updated`.
 
-If `OPS_PASSWORD` is enabled, either include Basic Auth in the webhook URL or set `WEBHOOK_SECRET` and use:
+If `OPS_PASSWORD` is enabled, set `WEBHOOK_SECRET` to the same secret configured in Chatwoot. Chatwoot will sign webhook requests with `X-Chatwoot-Signature`, and this app will verify that signature.
+
+For older setups that cannot send a signed webhook, you can also use:
 
 ```text
 https://your-ops-console.example.com/api/webhooks/chatwoot?secret=your-webhook-secret
