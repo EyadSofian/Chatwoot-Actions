@@ -829,8 +829,9 @@ test("handleDepartmentRouterWebhook never prompts or routes broadcast conversati
         status: "open",
         inbox_id: 2,
         contact_id: 10,
-        custom_attributes: {},
-        additional_attributes: { campaign_id: 88 },
+        // The external campaign uploader marks conversations with custom
+        // attributes instead of a native campaign_id.
+        custom_attributes: { api_campaign_label: "june-promo", api_sent_june_promo_welcome: "2026-06-14T00:00:00Z" },
         meta: { assignee: { id: 4, name: "Old Agent" } }
       }));
       return;
@@ -861,8 +862,7 @@ test("handleDepartmentRouterWebhook never prompts or routes broadcast conversati
     const created = await handleDepartmentRouterWebhook({
       event: "conversation_created",
       id: 33,
-      inbox_id: 2,
-      additional_attributes: { campaign_id: 88 }
+      inbox_id: 2
     }, options);
 
     assert.equal(created.skipped, true);

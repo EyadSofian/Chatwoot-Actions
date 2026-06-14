@@ -481,7 +481,7 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
 
     if (config.skipCampaigns) {
       const alreadyBroadcast = String(localRoute?.state || "").toLowerCase() === "broadcast";
-      const campaignId = getConversationCampaignId(conversation);
+      const campaignId = getConversationCampaignMarker(conversation);
       if (alreadyBroadcast || campaignId) {
         if (!alreadyBroadcast) {
           localRoute = await config.stateStore.save(conversationId, {
@@ -768,6 +768,21 @@ function getConversationCampaignId(conversation) {
     meta.campaign?.id ||
     meta.campaign_id ||
     null;
+}
+
+// Detects conversations opened or touched by a broadcast/campaign. Covers both
+// Chatwoot native campaigns (campaign_id) and the external campaign uploader,
+// which marks conversations with custom attributes instead of a campaign id.
+function getConversationCampaignMarker(conversation) {
+  const nativeId = getConversationCampaignId(conversation);
+  if (nativeId) return String(nativeId);
+
+  const customAttributes = getConversationCustomAttributes(conversation);
+  if (customAttributes.api_campaign_label) return String(customAttributes.api_campaign_label);
+  if (customAttributes.last_api_campaign_label) return String(customAttributes.last_api_campaign_label);
+  const sentKey = Object.keys(customAttributes).find(key => key.startsWith("api_sent_"));
+  if (sentKey) return sentKey;
+  return null;
 }
 
 async function promptForDepartment(client, conversation, config, { reason, force = false } = {}) {
@@ -1070,8 +1085,8 @@ export async function handleReopenRouterWebhook(payload = {}, options = {}) {
   }
 
   if (config.skipCampaigns) {
-    const campaignId = getConversationCampaignId(conversation) ||
-      getConversationCampaignId(getWebhookConversation(payload, message));
+    const campaignId = getConversationCampaignMarker(conversation) ||
+      getConversationCampaignMarker(getWebhookConversation(payload, message));
     if (campaignId) {
       return { ok: true, skipped: true, reason: "broadcast_conversation", conversationId, inboxId, campaignId };
     }
