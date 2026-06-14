@@ -412,6 +412,64 @@ test("handleReopenRouterWebhook leaves conversations assigned to online agents",
   }
 });
 
+test("handleReopenRouterWebhook restricts automatic assignment to the configured team", async () => {
+  let assignmentBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/agents") {
+      res.end(JSON.stringify([
+        { id: 4, name: "Outside Current Agent", availability_status: "online" },
+        { id: 8, name: "Outside Online Agent", availability_status: "online" },
+        { id: 7, name: "Team Online Agent", availability_status: "online" }
+      ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/teams/3/team_members") {
+      res.end(JSON.stringify([
+        { id: 7, name: "Team Online Agent", availability_status: "online" }
+      ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentBody = await readRequestJson(req);
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleReopenRouterWebhook(reopenPayload(), {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      teamId: "3",
+      cooldownSeconds: 0,
+      audit: false
+    });
+
+    assert.equal(result.action, "assigned");
+    assert.equal(result.fromAgentStatus, "online");
+    assert.equal(result.fromOutsideTargetTeam, true);
+    assert.equal(result.targetTeamId, "3");
+    assert.equal(result.toAgentId, 7);
+    assert.deepEqual(assignmentBody, { assignee_id: 7, team_id: 3 });
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("handleReopenRouterWebhook unassigns when no online agent is available", async () => {
   let assignmentBody = null;
   const server = createServer(async (req, res) => {

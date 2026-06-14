@@ -484,12 +484,15 @@ export async function handleReopenRouterWebhook(payload = {}, options = {}) {
   }
 
   const agents = normalizeRows(await client.listAgents());
+  const targetAgents = await loadReopenRouterTargetAgents(client, config, agents);
   const agentLookup = new Map(agents.map(agent => [String(getAgentId(agent)), agent]));
+  const targetAgentLookup = new Map(targetAgents.map(agent => [String(getAgentId(agent)), agent]));
   const currentAgentFromList = assigneeId ? agentLookup.get(String(assigneeId)) : null;
   const currentAgent = currentAgentFromList || assignee;
   const currentStatus = assigneeId ? getAgentAvailability(currentAgent, currentAgentFromList ? "unknown" : "missing") : "unassigned";
+  const currentOutsideTargetTeam = Boolean(config.teamId && assigneeId && !targetAgentLookup.has(String(assigneeId)));
 
-  if (assigneeId && !config.unavailableStatuses.includes(currentStatus)) {
+  if (assigneeId && !currentOutsideTargetTeam && !config.unavailableStatuses.includes(currentStatus)) {
     return {
       ok: true,
       skipped: true,
@@ -498,11 +501,12 @@ export async function handleReopenRouterWebhook(payload = {}, options = {}) {
       inboxId,
       assigneeId,
       assigneeName: getAgentName(currentAgent),
-      assigneeStatus: currentStatus
+      assigneeStatus: currentStatus,
+      targetTeamId: config.teamId || null
     };
   }
 
-  const candidates = orderReopenRouterCandidates(agents.filter(agent => {
+  const candidates = orderReopenRouterCandidates(targetAgents.filter(agent => {
     const agentId = getAgentId(agent);
     if (!agentId) return false;
     if (assigneeId && Number(agentId) === Number(assigneeId)) return false;
@@ -515,7 +519,7 @@ export async function handleReopenRouterWebhook(payload = {}, options = {}) {
   for (const candidate of candidates) {
     const targetAgentId = Number(getAgentId(candidate));
     try {
-      const response = await client.assignConversation(conversationId, { assignee_id: targetAgentId });
+      const response = await client.assignConversation(conversationId, buildReopenRouterAssignmentPayload(targetAgentId, config));
       markReopenRouterCooldown(conversationId, config.cooldownSeconds);
       await auditReopenRouter("reopen_router_reassigned", {
         conversationId,
@@ -523,6 +527,8 @@ export async function handleReopenRouterWebhook(payload = {}, options = {}) {
         fromAgentId: assigneeId || null,
         fromAgentName: getAgentName(currentAgent),
         fromAgentStatus: currentStatus,
+        fromOutsideTargetTeam: currentOutsideTargetTeam,
+        targetTeamId: config.teamId || null,
         toAgentId: targetAgentId,
         toAgentName: getAgentName(candidate)
       }, config.audit);
@@ -534,6 +540,8 @@ export async function handleReopenRouterWebhook(payload = {}, options = {}) {
         fromAgentId: assigneeId || null,
         fromAgentName: getAgentName(currentAgent),
         fromAgentStatus: currentStatus,
+        fromOutsideTargetTeam: currentOutsideTargetTeam,
+        targetTeamId: config.teamId || null,
         toAgentId: targetAgentId,
         toAgentName: getAgentName(candidate),
         result: response
@@ -553,8 +561,10 @@ export async function handleReopenRouterWebhook(payload = {}, options = {}) {
     assigneeId: assigneeId || null,
     assigneeName: getAgentName(currentAgent),
     assigneeStatus: currentStatus,
+    fromOutsideTargetTeam: currentOutsideTargetTeam,
+    targetTeamId: config.teamId || null,
     attempts,
-    reason: candidates.length ? "assignment_failed" : "no_online_candidates"
+    reason: candidates.length ? "assignment_failed" : noCandidateReason(config, targetAgents)
   });
 }
 
@@ -582,6 +592,23 @@ function buildReopenRouterConfig(options = {}) {
     ),
     audit: options.audit !== false
   };
+}
+
+async function loadReopenRouterTargetAgents(client, config, fallbackAgents) {
+  if (!config.teamId) return fallbackAgents;
+  return normalizeRows(await client.listTeamAgents(config.teamId));
+}
+
+function buildReopenRouterAssignmentPayload(targetAgentId, config) {
+  const payload = { assignee_id: targetAgentId };
+  if (config.teamId) payload.team_id = Number(config.teamId);
+  return payload;
+}
+
+function noCandidateReason(config, targetAgents) {
+  if (config.teamId && targetAgents.length === 0) return "no_team_members";
+  if (config.teamId) return "no_online_team_candidates";
+  return "no_online_candidates";
 }
 
 async function loadWebhookConversation(client, payload, message, conversationId) {

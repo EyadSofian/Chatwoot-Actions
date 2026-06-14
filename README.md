@@ -95,6 +95,8 @@ REOPEN_ROUTER_STATUSES=offline,busy,away,unavailable,missing
 REOPEN_ROUTER_FALLBACK=unassign
 REOPEN_ROUTER_ASSIGN_UNASSIGNED=true
 REOPEN_ROUTER_COOLDOWN_SECONDS=60
+REOPEN_ROUTER_INBOX_IDS=27
+REOPEN_ROUTER_TEAM_ID=3
 ```
 
 Optional filters:
@@ -108,10 +110,11 @@ REOPEN_ROUTER_TEAM_ID=3
 
 Notes:
 
-- If the current assignee is `online`, the app does nothing.
+- If the current assignee is `online` and inside the configured target team, the app does nothing. If the current assignee is outside that team, the app reroutes the conversation back to the target team.
+- If `REOPEN_ROUTER_TEAM_ID` is set, the app loads that team's members from Chatwoot and will only assign to online members of that team. It also sends `team_id` with the assignment.
 - The router only handles public incoming customer messages.
 - `REOPEN_ROUTER_INBOX_IDS` limits the automation to specific inboxes.
-- `REOPEN_ROUTER_AGENT_IDS` limits target agents to a safe online pool.
+- `REOPEN_ROUTER_AGENT_IDS` limits target agents to a safe online pool. When `REOPEN_ROUTER_TEAM_ID` is also set, this whitelist is applied inside that team only.
 - Each router decision is saved in local webhook events and the local audit log.
 
 ## Operator flow
