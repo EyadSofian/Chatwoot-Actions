@@ -2,6 +2,9 @@ import { ChatwootClient, buildFilterPayload, getMeta, getPayload } from "./chatw
 import { appendAudit, saveJob } from "./store.js";
 
 const DEFAULT_STATUSES = ["open", "pending", "resolved", "snoozed"];
+const REOPEN_ROUTER_DEFAULT_UNAVAILABLE = ["offline", "busy", "away", "unavailable", "missing"];
+const REOPEN_ROUTER_DEFAULT_FALLBACK = "unassign";
+const reopenRouterCooldowns = new Map();
 
 export function makeClient(connection) {
   return new ChatwootClient(connection || {});
@@ -444,6 +447,327 @@ export async function getOpenConversationReport(connection, criteria = {}) {
     conversations,
     warnings
   };
+}
+
+export async function handleReopenRouterWebhook(payload = {}, options = {}) {
+  const config = buildReopenRouterConfig(options);
+  if (!config.enabled) return { ok: true, skipped: true, reason: "disabled" };
+
+  const eventName = String(payload.event || payload.name || "").toLowerCase();
+  if (eventName && !eventName.includes("message_created")) {
+    return { ok: true, skipped: true, reason: "unsupported_event", event: payload.event || payload.name || "" };
+  }
+
+  const message = getWebhookMessage(payload);
+  if (!isIncomingWebhookMessage(payload, message)) {
+    return { ok: true, skipped: true, reason: "not_incoming_message", event: payload.event || payload.name || "" };
+  }
+
+  const conversationId = getWebhookConversationId(payload, message);
+  if (!conversationId) return { ok: false, skipped: true, reason: "missing_conversation_id" };
+
+  if (isReopenRouterCooling(conversationId, config.cooldownSeconds)) {
+    return { ok: true, skipped: true, reason: "cooldown", conversationId };
+  }
+
+  const client = makeClient(options.connection || {});
+  const conversation = await loadWebhookConversation(client, payload, message, conversationId);
+  const inboxId = getConversationInboxId(conversation) || getConversationInboxId(getWebhookConversation(payload, message));
+  if (config.inboxIds.length && !config.inboxIds.includes(String(inboxId))) {
+    return { ok: true, skipped: true, reason: "inbox_not_enabled", conversationId, inboxId };
+  }
+
+  const assignee = getConversationAssignee(conversation);
+  const assigneeId = getConversationAssigneeId(conversation);
+  if (!assigneeId && !config.assignUnassigned) {
+    return { ok: true, skipped: true, reason: "conversation_unassigned", conversationId, inboxId };
+  }
+
+  const agents = normalizeRows(await client.listAgents());
+  const agentLookup = new Map(agents.map(agent => [String(getAgentId(agent)), agent]));
+  const currentAgentFromList = assigneeId ? agentLookup.get(String(assigneeId)) : null;
+  const currentAgent = currentAgentFromList || assignee;
+  const currentStatus = assigneeId ? getAgentAvailability(currentAgent, currentAgentFromList ? "unknown" : "missing") : "unassigned";
+
+  if (assigneeId && !config.unavailableStatuses.includes(currentStatus)) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: currentStatus === "online" ? "assignee_online" : "assignee_status_not_configured",
+      conversationId,
+      inboxId,
+      assigneeId,
+      assigneeName: getAgentName(currentAgent),
+      assigneeStatus: currentStatus
+    };
+  }
+
+  const candidates = orderReopenRouterCandidates(agents.filter(agent => {
+    const agentId = getAgentId(agent);
+    if (!agentId) return false;
+    if (assigneeId && Number(agentId) === Number(assigneeId)) return false;
+    if (config.agentIds.length && !config.agentIds.includes(String(agentId))) return false;
+    if (getAgentAvailability(agent) !== "online") return false;
+    return agentMatchesInbox(agent, inboxId);
+  }), conversationId);
+
+  const attempts = [];
+  for (const candidate of candidates) {
+    const targetAgentId = Number(getAgentId(candidate));
+    try {
+      const response = await client.assignConversation(conversationId, { assignee_id: targetAgentId });
+      markReopenRouterCooldown(conversationId, config.cooldownSeconds);
+      await auditReopenRouter("reopen_router_reassigned", {
+        conversationId,
+        inboxId,
+        fromAgentId: assigneeId || null,
+        fromAgentName: getAgentName(currentAgent),
+        fromAgentStatus: currentStatus,
+        toAgentId: targetAgentId,
+        toAgentName: getAgentName(candidate)
+      }, config.audit);
+      return {
+        ok: true,
+        action: "assigned",
+        conversationId,
+        inboxId,
+        fromAgentId: assigneeId || null,
+        fromAgentName: getAgentName(currentAgent),
+        fromAgentStatus: currentStatus,
+        toAgentId: targetAgentId,
+        toAgentName: getAgentName(candidate),
+        result: response
+      };
+    } catch (error) {
+      attempts.push({
+        agentId: targetAgentId,
+        agentName: getAgentName(candidate),
+        error: error.message
+      });
+    }
+  }
+
+  return applyReopenRouterFallback(client, config, {
+    conversationId,
+    inboxId,
+    assigneeId: assigneeId || null,
+    assigneeName: getAgentName(currentAgent),
+    assigneeStatus: currentStatus,
+    attempts,
+    reason: candidates.length ? "assignment_failed" : "no_online_candidates"
+  });
+}
+
+function buildReopenRouterConfig(options = {}) {
+  return {
+    enabled: parseBooleanOption(options.enabled, process.env.REOPEN_ROUTER_ENABLED, false),
+    unavailableStatuses: parseListOption(
+      options.unavailableStatuses ?? options.statuses,
+      process.env.REOPEN_ROUTER_STATUSES,
+      REOPEN_ROUTER_DEFAULT_UNAVAILABLE
+    ).map(value => String(value).toLowerCase()),
+    fallback: String(
+      options.fallback ?? process.env.REOPEN_ROUTER_FALLBACK ?? REOPEN_ROUTER_DEFAULT_FALLBACK
+    ).toLowerCase(),
+    cooldownSeconds: Math.max(0, Number(
+      options.cooldownSeconds ?? process.env.REOPEN_ROUTER_COOLDOWN_SECONDS ?? 60
+    ) || 0),
+    inboxIds: parseListOption(options.inboxIds, process.env.REOPEN_ROUTER_INBOX_IDS, []).map(String),
+    agentIds: parseListOption(options.agentIds, process.env.REOPEN_ROUTER_AGENT_IDS, []).map(String),
+    teamId: options.teamId ?? process.env.REOPEN_ROUTER_TEAM_ID ?? "",
+    assignUnassigned: parseBooleanOption(
+      options.assignUnassigned,
+      process.env.REOPEN_ROUTER_ASSIGN_UNASSIGNED,
+      true
+    ),
+    audit: options.audit !== false
+  };
+}
+
+async function loadWebhookConversation(client, payload, message, conversationId) {
+  const conversation = getWebhookConversation(payload, message);
+  if (conversation && getConversationAssigneeId(conversation) && getConversationInboxId(conversation)) {
+    return conversation;
+  }
+
+  try {
+    const response = await client.conversationDetails(conversationId);
+    return unwrapConversationResponse(response) || conversation || {};
+  } catch (error) {
+    if (conversation) return conversation;
+    throw error;
+  }
+}
+
+function unwrapConversationResponse(response) {
+  if (!response) return null;
+  if (response.payload && !Array.isArray(response.payload)) return response.payload;
+  if (response.data?.payload && !Array.isArray(response.data.payload)) return response.data.payload;
+  return response;
+}
+
+function getWebhookMessage(payload) {
+  if (payload?.message && typeof payload.message === "object") return payload.message;
+  if (payload && ("message_type" in payload || "messageType" in payload || "sender_type" in payload || "content" in payload)) {
+    return payload;
+  }
+  return null;
+}
+
+function getWebhookConversation(payload, message) {
+  return payload?.conversation || message?.conversation || payload?.conversation_payload || null;
+}
+
+function getWebhookConversationId(payload, message) {
+  const conversation = getWebhookConversation(payload, message);
+  return conversation?.id || payload?.conversation_id || payload?.conversationId || message?.conversation_id || message?.conversationId || null;
+}
+
+function isIncomingWebhookMessage(payload, message) {
+  const eventName = String(payload?.event || payload?.name || "").toLowerCase();
+  if (eventName && !eventName.includes("message_created")) return false;
+  if (!message) return false;
+  if (!isPublicMessage(message)) return false;
+  return isCustomerMessage(message);
+}
+
+function getConversationAssignee(conversation) {
+  return conversation?.meta?.assignee || conversation?.assignee || conversation?.assigned_agent || conversation?.assignedAgent || null;
+}
+
+function getConversationAssigneeId(conversation) {
+  const assignee = getConversationAssignee(conversation);
+  return assignee?.id || conversation?.assignee_id || conversation?.assigneeId || null;
+}
+
+function getAgentId(agent) {
+  return agent?.id || agent?.agent_id || agent?.agentId || agent?.user_id || agent?.userId || agent?.user?.id || null;
+}
+
+function getAgentName(agent) {
+  return agent?.name || agent?.available_name || agent?.display_name || agent?.user?.name || agent?.email || "";
+}
+
+function getAgentAvailability(agent, missingFallback = "unknown") {
+  if (!agent) return missingFallback;
+  const value = agent.availability_status ?? agent.availabilityStatus ?? agent.availability ?? agent.status;
+  return value ? String(value).toLowerCase() : missingFallback;
+}
+
+function agentMatchesInbox(agent, inboxId) {
+  if (!inboxId) return true;
+
+  const inboxIds = [
+    ...asArray(agent?.inbox_ids),
+    ...asArray(agent?.inboxIds),
+    ...asArray(agent?.inboxes).map(item => item?.id ?? item?.inbox_id ?? item),
+    ...asArray(agent?.inbox_members).map(item => item?.inbox_id ?? item?.inboxId ?? item?.id ?? item)
+  ].filter(value => value !== undefined && value !== null && value !== "").map(String);
+
+  return inboxIds.length === 0 || inboxIds.includes(String(inboxId));
+}
+
+function orderReopenRouterCandidates(candidates, conversationId) {
+  const ordered = [...candidates].sort((left, right) => Number(getAgentId(left)) - Number(getAgentId(right)));
+  if (ordered.length <= 1) return ordered;
+  const start = Number(conversationId) % ordered.length;
+  return [...ordered.slice(start), ...ordered.slice(0, start)];
+}
+
+async function applyReopenRouterFallback(client, config, details) {
+  markReopenRouterCooldown(details.conversationId, config.cooldownSeconds);
+
+  if (config.fallback === "team" && config.teamId) {
+    const response = await client.assignConversation(details.conversationId, { team_id: Number(config.teamId) });
+    await auditReopenRouter("reopen_router_moved_to_team", {
+      ...details,
+      teamId: Number(config.teamId)
+    }, config.audit);
+    return {
+      ok: true,
+      action: "moved_to_team",
+      ...details,
+      teamId: Number(config.teamId),
+      result: response
+    };
+  }
+
+  if (config.fallback === "unassign") {
+    if (!details.assigneeId) {
+      await auditReopenRouter("reopen_router_left_unassigned", details, config.audit);
+      return {
+        ok: true,
+        action: "left_unassigned",
+        ...details
+      };
+    }
+
+    const response = await client.assignConversation(details.conversationId, { assignee_id: null });
+    await auditReopenRouter("reopen_router_unassigned", details, config.audit);
+    return {
+      ok: true,
+      action: "unassigned",
+      ...details,
+      result: response
+    };
+  }
+
+  await auditReopenRouter("reopen_router_no_target", details, config.audit);
+  return {
+    ok: true,
+    action: "no_target",
+    ...details
+  };
+}
+
+async function auditReopenRouter(action, details, enabled = true) {
+  if (!enabled) return;
+
+  const summary = action === "reopen_router_reassigned"
+    ? `Reopen router moved conversation ${details.conversationId} from ${details.fromAgentName || details.fromAgentId || "unassigned"} to ${details.toAgentName || details.toAgentId}`
+    : `Reopen router handled conversation ${details.conversationId}: ${details.reason || action}`;
+
+  await appendAudit({
+    action,
+    actor: { name: "Reopen Router", type: "automation" },
+    summary,
+    metadata: details
+  });
+}
+
+function isReopenRouterCooling(conversationId, cooldownSeconds) {
+  if (!cooldownSeconds) return false;
+  const key = String(conversationId);
+  const until = reopenRouterCooldowns.get(key);
+  if (!until) return false;
+  if (Date.now() < until) return true;
+  reopenRouterCooldowns.delete(key);
+  return false;
+}
+
+function markReopenRouterCooldown(conversationId, cooldownSeconds) {
+  if (!cooldownSeconds) return;
+  reopenRouterCooldowns.set(String(conversationId), Date.now() + cooldownSeconds * 1000);
+}
+
+function parseBooleanOption(optionValue, envValue, fallback) {
+  const value = optionValue !== undefined ? optionValue : envValue;
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  return ["1", "true", "yes", "on", "enabled"].includes(String(value).trim().toLowerCase());
+}
+
+function parseListOption(optionValue, envValue, fallback) {
+  const value = optionValue !== undefined ? optionValue : envValue;
+  if (value === undefined || value === null || value === "") return fallback;
+  return asArray(value)
+    .flatMap(item => String(item).split(/[,\s]+/))
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [value];
 }
 
 async function buildPhonePreviewRows(client, entry, criteria) {

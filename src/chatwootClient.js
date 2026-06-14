@@ -147,6 +147,10 @@ export class ChatwootClient {
     return this.request(this.accountPath("/conversations"), { query });
   }
 
+  conversationDetails(conversationId) {
+    return this.request(this.accountPath(`/conversations/${conversationId}`));
+  }
+
   filterConversations({ payload, page = 1 }) {
     return this.request(this.accountPath("/conversations/filter"), {
       method: "POST",

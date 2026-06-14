@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { buildPhoneAssignPreview, extractPhoneNumbers, getOpenConversationReport, normalizePhone, parsePhoneAssignInput } from "../src/operations.js";
+import {
+  buildPhoneAssignPreview,
+  extractPhoneNumbers,
+  getOpenConversationReport,
+  handleReopenRouterWebhook,
+  normalizePhone,
+  parsePhoneAssignInput
+} from "../src/operations.js";
 
 test("normalizePhone removes formatting and international prefix", () => {
   assert.equal(normalizePhone("+966 55 826 2332"), "966558262332");
@@ -310,3 +317,173 @@ test("getOpenConversationReport can detect customers needing a sales reply", asy
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+test("handleReopenRouterWebhook assigns incoming reopened conversations to an online agent", async () => {
+  let assignmentBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/agents") {
+      res.end(JSON.stringify([
+        { id: 4, name: "Old Agent", availability_status: "offline" },
+        { id: 7, name: "Online Agent", availability_status: "online" }
+      ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentBody = await readRequestJson(req);
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleReopenRouterWebhook(reopenPayload(), {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      cooldownSeconds: 0,
+      audit: false
+    });
+
+    assert.equal(result.action, "assigned");
+    assert.equal(result.fromAgentId, 4);
+    assert.equal(result.fromAgentStatus, "offline");
+    assert.equal(result.toAgentId, 7);
+    assert.deepEqual(assignmentBody, { assignee_id: 7 });
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleReopenRouterWebhook leaves conversations assigned to online agents", async () => {
+  let assignmentCalled = false;
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/agents") {
+      res.end(JSON.stringify([
+        { id: 4, name: "Old Agent", availability_status: "online" },
+        { id: 7, name: "Online Agent", availability_status: "online" }
+      ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments") {
+      assignmentCalled = true;
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleReopenRouterWebhook(reopenPayload(), {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      cooldownSeconds: 0,
+      audit: false
+    });
+
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "assignee_online");
+    assert.equal(assignmentCalled, false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleReopenRouterWebhook unassigns when no online agent is available", async () => {
+  let assignmentBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/agents") {
+      res.end(JSON.stringify([
+        { id: 4, name: "Old Agent", availability_status: "offline" },
+        { id: 7, name: "Busy Agent", availability_status: "busy" }
+      ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentBody = await readRequestJson(req);
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleReopenRouterWebhook(reopenPayload(), {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      fallback: "unassign",
+      cooldownSeconds: 0,
+      audit: false
+    });
+
+    assert.equal(result.action, "unassigned");
+    assert.equal(result.reason, "no_online_candidates");
+    assert.deepEqual(assignmentBody, { assignee_id: null });
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+function reopenPayload(overrides = {}) {
+  return {
+    event: "message_created",
+    message: {
+      id: 99,
+      message_type: 0,
+      sender_type: "Contact",
+      conversation_id: 33,
+      conversation: {
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        meta: {
+          sender: { id: 10, name: "Ahmed", phone_number: "+966558262332" },
+          assignee: { id: 4, name: "Old Agent" },
+          inbox: { id: 2, name: "WhatsApp" }
+        }
+      }
+    },
+    ...overrides
+  };
+}
+
+async function readRequestJson(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+}

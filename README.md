@@ -13,6 +13,7 @@ Small self-hosted companion app for Chatwoot operations:
 - Store a local audit log for every action made through this app.
 - Export audit logs, campaign trackers, and bulk job results as CSV.
 - Receive Chatwoot webhooks and count campaign replies.
+- Automatically reroute reopened incoming conversations away from offline/busy agents.
 - Run as a Chatwoot Dashboard App and read conversation/contact/currentAgent context.
 
 ## Run
@@ -51,6 +52,8 @@ CHATWOOT_ACCOUNT_ID=1
 CHATWOOT_API_TOKEN=your-user-access-token
 OPS_USERNAME=admin
 OPS_PASSWORD=use-a-strong-password
+WEBHOOK_SECRET=use-a-different-strong-secret
+REOPEN_ROUTER_ENABLED=false
 ```
 
 If you want local audit logs, bulk job history, webhook events, and campaign counters to persist after redeploys, attach a Railway Volume. Either mount it to `/app/data`, or mount it anywhere and set `DATA_DIR` to that mount path.
@@ -69,6 +72,45 @@ https://your-ops-console.example.com/api/webhooks/chatwoot
 ```
 
 Subscribe at least to `message_created`, `message_updated`, `conversation_updated`, and `contact_updated`.
+
+If `OPS_PASSWORD` is enabled, either include Basic Auth in the webhook URL or set `WEBHOOK_SECRET` and use:
+
+```text
+https://your-ops-console.example.com/api/webhooks/chatwoot?secret=your-webhook-secret
+```
+
+## Reopen Router
+
+The Reopen Router fixes the Chatwoot behavior where an incoming WhatsApp reply can reopen an old conversation and keep it assigned to the previous agent even when that agent is offline or busy.
+
+When enabled, `/api/webhooks/chatwoot` listens for incoming `message_created` events. If the current assignee is unavailable, the app assigns the conversation to an online agent. If no online agent can be assigned, the default fallback is to unassign the conversation so it returns to the shared queue.
+
+Set these variables on Railway:
+
+```text
+REOPEN_ROUTER_ENABLED=true
+REOPEN_ROUTER_STATUSES=offline,busy,away,unavailable,missing
+REOPEN_ROUTER_FALLBACK=unassign
+REOPEN_ROUTER_ASSIGN_UNASSIGNED=true
+REOPEN_ROUTER_COOLDOWN_SECONDS=60
+```
+
+Optional filters:
+
+```text
+REOPEN_ROUTER_INBOX_IDS=1,2
+REOPEN_ROUTER_AGENT_IDS=4,7,9
+REOPEN_ROUTER_FALLBACK=team
+REOPEN_ROUTER_TEAM_ID=3
+```
+
+Notes:
+
+- If the current assignee is `online`, the app does nothing.
+- The router only handles public incoming customer messages.
+- `REOPEN_ROUTER_INBOX_IDS` limits the automation to specific inboxes.
+- `REOPEN_ROUTER_AGENT_IDS` limits target agents to a safe online pool.
+- Each router decision is saved in local webhook events and the local audit log.
 
 ## Operator flow
 

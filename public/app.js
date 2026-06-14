@@ -797,7 +797,7 @@ function campaignsView() {
       </section>
       <section class="panel">
         <div class="panel-header"><h2>${tr("Webhook Events")}</h2><button class="button secondary" data-action="load-webhooks">${tr("Load events")}</button></div>
-        <div class="panel-body">${simpleTable(state.webhooks.slice(0, 8), ["receivedAt", "event", "campaignId"])}</div>
+        <div class="panel-body">${simpleTable(state.webhooks.slice(0, 8), ["receivedAt", "event", "campaignId", "router.action", "router.reason", "router.fromAgentStatus", "router.toAgentName"])}</div>
       </section>
     </div>
     <section class="panel" style="margin-top:16px">

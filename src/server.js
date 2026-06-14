@@ -12,6 +12,7 @@ import {
   executePhoneAssign,
   getOpenConversationReport,
   getReportsSummary,
+  handleReopenRouterWebhook,
   makeClient,
   parsePhoneAssignInput,
   probeChatwoot
@@ -60,6 +61,8 @@ server.listen(port, host, () => {
 });
 
 function isAuthorized(req) {
+  if (isWebhookSecretAuthorized(req)) return true;
+
   const password = process.env.OPS_PASSWORD;
   if (!password) return true;
 
@@ -75,6 +78,18 @@ function isAuthorized(req) {
   const requestUsername = decoded.slice(0, separator);
   const requestPassword = decoded.slice(separator + 1);
   return requestUsername === username && requestPassword === password;
+}
+
+function isWebhookSecretAuthorized(req) {
+  const secret = process.env.WEBHOOK_SECRET || process.env.CHATWOOT_WEBHOOK_SECRET;
+  if (!secret || !req.url) return false;
+
+  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  if (url.pathname !== "/api/webhooks/chatwoot") return false;
+
+  const suppliedSecret = req.headers["x-chatwoot-ops-secret"] || req.headers["x-webhook-secret"] ||
+    url.searchParams.get("secret") || url.searchParams.get("token");
+  return suppliedSecret === secret;
 }
 
 async function route(req, res) {
@@ -147,13 +162,35 @@ async function route(req, res) {
 
   if (req.method === "POST" && url.pathname === "/api/webhooks/chatwoot") {
     const body = await readJsonBody(req);
+    let router = null;
+    try {
+      router = await handleReopenRouterWebhook(body);
+    } catch (error) {
+      router = {
+        ok: false,
+        reason: "reopen_router_error",
+        error: error.message || "Unexpected reopen router error"
+      };
+      try {
+        await appendAudit({
+          action: "reopen_router_error",
+          actor: { name: "Reopen Router", type: "automation" },
+          summary: router.error,
+          metadata: { event: body.event || body.name || "", body }
+        });
+      } catch {
+        // Keep webhook acknowledgements reliable even if local audit storage is unavailable.
+      }
+    }
+
     const row = await appendWebhookEvent({
       event: body.event,
       campaignId: body.campaign_id || body.message?.campaign_id,
+      router,
       payload: body
     });
     await updateCampaignFromWebhook(row);
-    return sendJson(res, 200, { ok: true, id: row.id });
+    return sendJson(res, 200, { ok: true, id: row.id, router });
   }
 
   if (req.method === "GET" && url.pathname === "/api/campaigns") {
