@@ -1,5 +1,5 @@
 import { ChatwootClient, buildFilterPayload, getMeta, getPayload } from "./chatwootClient.js";
-import { appendAudit, saveJob } from "./store.js";
+import { appendAudit, getDepartmentRoute, saveDepartmentRoute, saveJob } from "./store.js";
 
 const DEFAULT_STATUSES = ["open", "pending", "resolved", "snoozed"];
 const REOPEN_ROUTER_DEFAULT_UNAVAILABLE = ["offline", "busy", "away", "unavailable", "missing"];
@@ -477,6 +477,7 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
     if (config.inboxIds.length && !config.inboxIds.includes(String(inboxId))) {
       return { ok: true, handled: false, skipped: true, reason: "department_inbox_not_enabled", conversationId, inboxId };
     }
+    let localRoute = await config.stateStore.get(conversationId);
 
     if (eventName.includes("conversation_status_changed")) {
       const status = getWebhookConversationStatus(payload, conversation);
@@ -484,7 +485,7 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
         return { ok: true, handled: false, skipped: true, reason: "department_status_ignored", conversationId, inboxId, status };
       }
 
-      const customAttributes = await updateDepartmentAttributes(client, conversation, {
+      const customAttributes = await persistDepartmentState(client, conversation, config, {
         [DEPARTMENT_ATTRIBUTES.state]: "resolved",
         [DEPARTMENT_ATTRIBUTES.promptNext]: true
       });
@@ -508,6 +509,16 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
       if (!config.promptOnNew) {
         return { ok: true, handled: false, skipped: true, reason: "new_prompt_disabled", conversationId, inboxId };
       }
+      if (localRoute?.state || localRoute?.promptedAt) {
+        return {
+          ok: true,
+          handled: true,
+          skipped: true,
+          reason: "conversation_already_seen",
+          conversationId,
+          inboxId
+        };
+      }
       return promptForDepartment(client, conversation, config, { reason: "new_conversation" });
     }
 
@@ -517,8 +528,27 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
 
     const content = String(message?.content || payload?.content || "");
     const customAttributes = getConversationCustomAttributes(conversation);
-    const routeState = String(customAttributes[DEPARTMENT_ATTRIBUTES.state] || "").toLowerCase();
-    const promptNext = parseBooleanOption(customAttributes[DEPARTMENT_ATTRIBUTES.promptNext], undefined, false);
+    const messageId = message?.id || payload?.message_id || null;
+    if (messageId && String(localRoute?.lastIncomingMessageId || "") === String(messageId)) {
+      return { ok: true, handled: true, skipped: true, reason: "duplicate_incoming_message", conversationId, inboxId };
+    }
+    if (messageId) {
+      localRoute = await config.stateStore.save(conversationId, {
+        inboxId,
+        lastIncomingMessageId: String(messageId)
+      });
+    }
+
+    const routeState = String(
+      localRoute?.state ||
+      customAttributes[DEPARTMENT_ATTRIBUTES.state] ||
+      ""
+    ).toLowerCase();
+    const promptNext = parseBooleanOption(
+      localRoute?.promptNext ?? customAttributes[DEPARTMENT_ATTRIBUTES.promptNext],
+      undefined,
+      false
+    );
 
     if (isDepartmentChangeRequest(content)) {
       return promptForDepartment(client, conversation, config, { reason: "customer_requested_change", force: true });
@@ -534,10 +564,6 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
         return routeConversationToDepartment(client, conversation, config, selection, "customer_selection");
       }
 
-      if (shouldRepeatDepartmentPrompt(customAttributes, message)) {
-        return promptForDepartment(client, conversation, config, { reason: "invalid_selection", force: true });
-      }
-
       return {
         ok: true,
         handled: true,
@@ -547,12 +573,19 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
       };
     }
 
-    const knownDepartment = getKnownConversationDepartment(conversation, config);
+    const knownDepartment = getKnownConversationDepartment(conversation, config, localRoute);
     if (knownDepartment) {
       return routeConversationToDepartment(client, conversation, config, knownDepartment, "existing_department");
     }
 
-    return promptForDepartment(client, conversation, config, { reason: "department_unknown" });
+    return {
+      ok: true,
+      handled: true,
+      skipped: true,
+      reason: "existing_department_unknown",
+      conversationId,
+      inboxId
+    };
   });
 }
 
@@ -571,6 +604,10 @@ function buildDepartmentRouterConfig(options = {}) {
       "تم تحويل محادثتك إلى فريق المبيعات، وسيتم الرد عليك في أقرب وقت."),
     operationsConfirmationText: String(options.operationsConfirmationText ?? process.env.DEPARTMENT_ROUTER_OPERATIONS_CONFIRMATION_TEXT ??
       "تم تحويل محادثتك إلى فريق العمليات، وسيتم الرد عليك في أقرب وقت."),
+    stateStore: options.stateStore || {
+      get: getDepartmentRoute,
+      save: saveDepartmentRoute
+    },
     audit: options.audit !== false
   };
 }
@@ -591,11 +628,14 @@ async function promptForDepartment(client, conversation, config, { reason, force
   const conversationId = conversation.id;
   const inboxId = getConversationInboxId(conversation);
   const customAttributes = getConversationCustomAttributes(conversation);
-  const routeState = String(customAttributes[DEPARTMENT_ATTRIBUTES.state] || "").toLowerCase();
-  const promptedAt = Date.parse(customAttributes[DEPARTMENT_ATTRIBUTES.promptedAt] || "");
-  const recentlyPrompted = Number.isFinite(promptedAt) && Date.now() - promptedAt < 15000;
+  const localRoute = await config.stateStore.get(conversationId);
+  const routeState = String(
+    localRoute?.state ||
+    customAttributes[DEPARTMENT_ATTRIBUTES.state] ||
+    ""
+  ).toLowerCase();
 
-  if (!force && routeState === "pending" && recentlyPrompted) {
+  if (!force && routeState === "pending") {
     return {
       ok: true,
       handled: true,
@@ -617,7 +657,7 @@ async function promptForDepartment(client, conversation, config, { reason, force
     content_type: "text",
     content_attributes: {}
   });
-  const updatedAttributes = await updateDepartmentAttributes(client, conversation, {
+  const updatedAttributes = await persistDepartmentState(client, conversation, config, {
     [DEPARTMENT_ATTRIBUTES.state]: "pending",
     [DEPARTMENT_ATTRIBUTES.promptNext]: false,
     [DEPARTMENT_ATTRIBUTES.promptedAt]: new Date().toISOString()
@@ -655,7 +695,6 @@ async function routeConversationToDepartment(client, conversation, config, depar
   const inboxAgentIds = new Set(normalizeRows(inboxAgentsResponse).map(agent => String(getAgentId(agent))));
   const eligibleAgents = teamAgents.filter(agent => inboxAgentIds.has(String(getAgentId(agent))));
   const currentAssigneeId = getConversationAssigneeId(conversation);
-  const currentTeamId = getConversationTeamId(conversation);
   const currentAgent = eligibleAgents.find(agent => String(getAgentId(agent)) === String(currentAssigneeId));
   const currentIsEligibleOnline = Boolean(currentAgent && getAgentAvailability(currentAgent) === "online");
 
@@ -663,7 +702,7 @@ async function routeConversationToDepartment(client, conversation, config, depar
   let targetAgent = currentAgent || null;
   let assignmentResult = null;
 
-  if (!currentIsEligibleOnline || String(currentTeamId || "") !== String(teamId)) {
+  if (!currentIsEligibleOnline) {
     const onlineAgents = orderReopenRouterCandidates(
       eligibleAgents.filter(agent => getAgentAvailability(agent) === "online"),
       conversationId
@@ -677,7 +716,7 @@ async function routeConversationToDepartment(client, conversation, config, depar
     action = targetAgent ? "department_assigned" : "department_team_queue";
   }
 
-  const updatedAttributes = await updateDepartmentAttributes(client, conversation, {
+  const updatedAttributes = await persistDepartmentState(client, conversation, config, {
     [DEPARTMENT_ATTRIBUTES.department]: department,
     [DEPARTMENT_ATTRIBUTES.state]: "routed",
     [DEPARTMENT_ATTRIBUTES.teamId]: Number(teamId),
@@ -727,6 +766,41 @@ async function updateDepartmentAttributes(client, conversation, changes) {
   return conversation.custom_attributes;
 }
 
+async function persistDepartmentState(client, conversation, config, changes) {
+  const localChanges = departmentAttributeChangesToLocalState(changes);
+  const localRoute = await config.stateStore.save(conversation.id, {
+    inboxId: getConversationInboxId(conversation),
+    ...localChanges
+  });
+
+  try {
+    await updateDepartmentAttributes(client, conversation, changes);
+  } catch (error) {
+    await auditDepartmentRouter("department_router_custom_attributes_failed", {
+      conversationId: conversation.id,
+      inboxId: getConversationInboxId(conversation),
+      error: error.message
+    }, config.audit);
+  }
+
+  return {
+    ...getConversationCustomAttributes(conversation),
+    ...changes,
+    _localRoute: localRoute
+  };
+}
+
+function departmentAttributeChangesToLocalState(changes) {
+  const local = {};
+  if (DEPARTMENT_ATTRIBUTES.department in changes) local.department = changes[DEPARTMENT_ATTRIBUTES.department];
+  if (DEPARTMENT_ATTRIBUTES.state in changes) local.state = changes[DEPARTMENT_ATTRIBUTES.state];
+  if (DEPARTMENT_ATTRIBUTES.teamId in changes) local.teamId = changes[DEPARTMENT_ATTRIBUTES.teamId];
+  if (DEPARTMENT_ATTRIBUTES.promptNext in changes) local.promptNext = changes[DEPARTMENT_ATTRIBUTES.promptNext];
+  if (DEPARTMENT_ATTRIBUTES.promptedAt in changes) local.promptedAt = changes[DEPARTMENT_ATTRIBUTES.promptedAt];
+  if (DEPARTMENT_ATTRIBUTES.routedAt in changes) local.routedAt = changes[DEPARTMENT_ATTRIBUTES.routedAt];
+  return local;
+}
+
 function getConversationCustomAttributes(conversation) {
   return conversation?.custom_attributes || conversation?.customAttributes || {};
 }
@@ -739,12 +813,17 @@ function getWebhookConversationStatus(payload, conversation) {
   return String(payload?.status || payload?.conversation?.status || conversation?.status || "").toLowerCase();
 }
 
-function getKnownConversationDepartment(conversation, config) {
+function getKnownConversationDepartment(conversation, config, localRoute = null) {
   const customAttributes = getConversationCustomAttributes(conversation);
-  const saved = String(customAttributes[DEPARTMENT_ATTRIBUTES.department] || "").toLowerCase();
+  const saved = String(
+    localRoute?.department ||
+    customAttributes[DEPARTMENT_ATTRIBUTES.department] ||
+    ""
+  ).toLowerCase();
   if (saved === "sales" || saved === "operations") return saved;
 
   const teamId = String(
+    localRoute?.teamId ||
     customAttributes[DEPARTMENT_ATTRIBUTES.teamId] ||
     getConversationTeamId(conversation) ||
     ""
@@ -792,14 +871,6 @@ function normalizeDepartmentText(value) {
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function shouldRepeatDepartmentPrompt(customAttributes, message) {
-  const promptedAt = Date.parse(customAttributes[DEPARTMENT_ATTRIBUTES.promptedAt] || "");
-  if (Number.isFinite(promptedAt) && Date.now() - promptedAt < 15000) return false;
-  const messageAt = getMessageTimeMs(message);
-  if (!Number.isFinite(promptedAt) || !Number.isFinite(messageAt)) return true;
-  return messageAt - promptedAt > 5000;
 }
 
 async function auditDepartmentRouter(action, details, enabled = true) {

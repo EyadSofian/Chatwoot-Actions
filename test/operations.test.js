@@ -455,6 +455,9 @@ test("handleDepartmentRouterWebhook routes choice 1 to an online sales team inbo
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
     const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore({
+      33: { conversationId: 33, state: "pending" }
+    });
     const payload = reopenPayload();
     payload.message.content = "1";
     const result = await handleDepartmentRouterWebhook(payload, {
@@ -467,6 +470,7 @@ test("handleDepartmentRouterWebhook routes choice 1 to an online sales team inbo
       inboxIds: ["2"],
       salesTeamId: "4",
       operationsTeamId: "3",
+      stateStore,
       audit: false
     });
 
@@ -531,6 +535,7 @@ test("handleDepartmentRouterWebhook sends the department menu for a new conversa
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
     const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore();
     const result = await handleDepartmentRouterWebhook({
       event: "conversation_created",
       id: 33,
@@ -545,6 +550,7 @@ test("handleDepartmentRouterWebhook sends the department menu for a new conversa
       inboxIds: ["2"],
       salesTeamId: "4",
       operationsTeamId: "3",
+      stateStore,
       audit: false
     });
 
@@ -593,6 +599,7 @@ test("handleDepartmentRouterWebhook marks resolved conversations to prompt on th
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
     const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore();
     const result = await handleDepartmentRouterWebhook({
       event: "conversation_status_changed",
       id: 33,
@@ -608,6 +615,7 @@ test("handleDepartmentRouterWebhook marks resolved conversations to prompt on th
       inboxIds: ["2"],
       salesTeamId: "4",
       operationsTeamId: "3",
+      stateStore,
       audit: false
     });
 
@@ -615,6 +623,108 @@ test("handleDepartmentRouterWebhook marks resolved conversations to prompt on th
     assert.equal(result.action, "marked_for_reentry");
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_prompt_next, true);
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "resolved");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook ignores old open conversations with no known department", async () => {
+  let writeCalls = 0;
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: {},
+        meta: { assignee: { id: 4, name: "Existing Agent" } }
+      }));
+      return;
+    }
+
+    writeCalls += 1;
+    res.end(JSON.stringify({ ok: true }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore();
+    const payload = reopenPayload();
+    payload.message.content = "عندي استفسار";
+    const result = await handleDepartmentRouterWebhook(payload, {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "existing_department_unknown");
+    assert.equal(writeCalls, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook does not repeat the menu for invalid or duplicate replies", async () => {
+  let writeCalls = 0;
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: {}
+      }));
+      return;
+    }
+
+    writeCalls += 1;
+    res.end(JSON.stringify({ ok: true }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore({
+      33: { conversationId: 33, state: "pending", promptedAt: new Date().toISOString() }
+    });
+    const payload = reopenPayload();
+    payload.message.content = "محتاج مساعدة";
+
+    const options = {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    };
+    const first = await handleDepartmentRouterWebhook(payload, options);
+    const duplicate = await handleDepartmentRouterWebhook(payload, options);
+
+    assert.equal(first.action, "awaiting_department");
+    assert.equal(duplicate.reason, "duplicate_incoming_message");
+    assert.equal(writeCalls, 0);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -829,4 +939,26 @@ async function readRequestJson(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+}
+
+function createMemoryDepartmentStateStore(initial = {}) {
+  const rows = new Map(
+    Object.entries(initial).map(([key, value]) => [String(key), { ...value }])
+  );
+  return {
+    async get(conversationId) {
+      const row = rows.get(String(conversationId));
+      return row ? { ...row } : null;
+    },
+    async save(conversationId, changes) {
+      const key = String(conversationId);
+      const row = {
+        ...(rows.get(key) || { conversationId }),
+        ...changes,
+        conversationId
+      };
+      rows.set(key, row);
+      return { ...row };
+    }
+  };
 }

@@ -149,8 +149,10 @@ Behavior:
 - Resolved conversation: mark it to show the menu on the customer's next message.
 - While waiting for the department choice, remove any temporary agent assignment so the conversation cannot be handled by the wrong department.
 - Old open conversation already assigned to Sales Team `4` or Operations Team `3`: keep the same department and only move it when the current agent is not an eligible online team/inbox member.
+- Old open conversation with no known Sales/Operations team: do nothing. Never send the menu just because an old conversation has no saved department.
+- While waiting for `1` or `2`, an invalid reply does not repeat the menu. Duplicate `message_created` webhooks are ignored by message id.
 - No online eligible member: assign the selected team and leave the agent unassigned so nobody outside the team receives the conversation.
-- Routing state is stored in Chatwoot conversation custom attributes, so it survives app redeploys.
+- Routing state is stored both locally and in Chatwoot conversation custom attributes. Local state remains the fallback when custom attributes are unavailable.
 
 For WhatsApp, the default menu is text-based because it works reliably for every provider. Chatwoot supports interactive message content types, but WhatsApp reply buttons generally require a compatible provider flow or an approved WhatsApp template. Keep the text menu unless the WhatsApp integration has a tested interactive template.
 

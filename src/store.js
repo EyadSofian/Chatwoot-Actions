@@ -9,7 +9,8 @@ const files = {
   audit: join(dataDir, "audit-log.json"),
   jobs: join(dataDir, "jobs.json"),
   webhooks: join(dataDir, "webhook-events.json"),
-  campaigns: join(dataDir, "campaigns.json")
+  campaigns: join(dataDir, "campaigns.json"),
+  departmentRoutes: join(dataDir, "department-routes.json")
 };
 
 export async function readCollection(name) {
@@ -60,6 +61,28 @@ export async function appendWebhookEvent(event) {
   };
   webhooks.unshift(row);
   await writeCollection("webhooks", webhooks.slice(0, 2000));
+  return row;
+}
+
+export async function getDepartmentRoute(conversationId) {
+  const routes = await readCollection("departmentRoutes");
+  return routes.find(item => String(item.conversationId) === String(conversationId)) || null;
+}
+
+export async function saveDepartmentRoute(conversationId, changes = {}) {
+  const routes = await readCollection("departmentRoutes");
+  const index = routes.findIndex(item => String(item.conversationId) === String(conversationId));
+  const current = index >= 0 ? routes[index] : { conversationId };
+  const row = {
+    ...current,
+    ...changes,
+    conversationId,
+    updatedAt: new Date().toISOString()
+  };
+
+  if (index >= 0) routes[index] = row;
+  else routes.unshift(row);
+  await writeCollection("departmentRoutes", routes.slice(0, 10000));
   return row;
 }
 
