@@ -332,6 +332,16 @@ test("handleReopenRouterWebhook assigns incoming reopened conversations to an on
       return;
     }
 
+    if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
+      res.end(JSON.stringify({
+        payload: [
+          { id: 4, name: "Old Agent", availability_status: "offline" },
+          { id: 7, name: "Online Agent", availability_status: "online" }
+        ]
+      }));
+      return;
+    }
+
     if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
       assignmentBody = await readRequestJson(req);
       res.end(JSON.stringify({ ok: true }));
@@ -380,6 +390,16 @@ test("handleReopenRouterWebhook leaves conversations assigned to online agents",
       return;
     }
 
+    if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
+      res.end(JSON.stringify({
+        payload: [
+          { id: 4, name: "Old Agent", availability_status: "online" },
+          { id: 7, name: "Online Agent", availability_status: "online" }
+        ]
+      }));
+      return;
+    }
+
     if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments") {
       assignmentCalled = true;
       res.end(JSON.stringify({ ok: true }));
@@ -422,15 +442,26 @@ test("handleReopenRouterWebhook restricts automatic assignment to the configured
       res.end(JSON.stringify([
         { id: 4, name: "Outside Current Agent", availability_status: "online" },
         { id: 8, name: "Outside Online Agent", availability_status: "online" },
-        { id: 7, name: "Team Online Agent", availability_status: "online" }
+        { id: 7, name: "Team Online Agent", availability_status: "online" },
+        { id: 9, name: "Team Agent Outside Inbox", availability_status: "online" }
       ]));
       return;
     }
 
     if (url.pathname === "/api/v1/accounts/1/teams/3/team_members") {
       res.end(JSON.stringify([
-        { id: 7, name: "Team Online Agent", availability_status: "online" }
+        { id: 7, name: "Team Online Agent", availability_status: "online" },
+        { id: 9, name: "Team Agent Outside Inbox", availability_status: "online" }
       ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
+      res.end(JSON.stringify({
+        payload: [
+          { id: 7, name: "Team Online Agent", availability_status: "online" }
+        ]
+      }));
       return;
     }
 
@@ -481,6 +512,16 @@ test("handleReopenRouterWebhook unassigns when no online agent is available", as
         { id: 4, name: "Old Agent", availability_status: "offline" },
         { id: 7, name: "Busy Agent", availability_status: "busy" }
       ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
+      res.end(JSON.stringify({
+        payload: [
+          { id: 4, name: "Old Agent", availability_status: "offline" },
+          { id: 7, name: "Busy Agent", availability_status: "busy" }
+        ]
+      }));
       return;
     }
 

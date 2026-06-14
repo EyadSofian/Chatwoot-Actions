@@ -484,7 +484,7 @@ export async function handleReopenRouterWebhook(payload = {}, options = {}) {
   }
 
   const agents = normalizeRows(await client.listAgents());
-  const targetAgents = await loadReopenRouterTargetAgents(client, config, agents);
+  const targetAgents = await loadReopenRouterTargetAgents(client, config, agents, inboxId);
   const agentLookup = new Map(agents.map(agent => [String(getAgentId(agent)), agent]));
   const targetAgentLookup = new Map(targetAgents.map(agent => [String(getAgentId(agent)), agent]));
   const currentAgentFromList = assigneeId ? agentLookup.get(String(assigneeId)) : null;
@@ -564,7 +564,7 @@ export async function handleReopenRouterWebhook(payload = {}, options = {}) {
     fromOutsideTargetTeam: currentOutsideTargetTeam,
     targetTeamId: config.teamId || null,
     attempts,
-    reason: candidates.length ? "assignment_failed" : noCandidateReason(config, targetAgents)
+    reason: candidates.length ? "assignment_failed" : noCandidateReason(config, targetAgents, inboxId)
   });
 }
 
@@ -594,9 +594,13 @@ function buildReopenRouterConfig(options = {}) {
   };
 }
 
-async function loadReopenRouterTargetAgents(client, config, fallbackAgents) {
-  if (!config.teamId) return fallbackAgents;
-  return normalizeRows(await client.listTeamAgents(config.teamId));
+async function loadReopenRouterTargetAgents(client, config, fallbackAgents, inboxId) {
+  let agents = config.teamId ? normalizeRows(await client.listTeamAgents(config.teamId)) : fallbackAgents;
+  if (!inboxId) return agents;
+
+  const inboxAgents = normalizeRows(await client.listInboxAgents(inboxId));
+  const inboxAgentIds = new Set(inboxAgents.map(agent => String(getAgentId(agent))));
+  return agents.filter(agent => inboxAgentIds.has(String(getAgentId(agent))));
 }
 
 function buildReopenRouterAssignmentPayload(targetAgentId, config) {
@@ -605,7 +609,9 @@ function buildReopenRouterAssignmentPayload(targetAgentId, config) {
   return payload;
 }
 
-function noCandidateReason(config, targetAgents) {
+function noCandidateReason(config, targetAgents, inboxId) {
+  if (config.teamId && inboxId && targetAgents.length === 0) return "no_team_inbox_members";
+  if (inboxId && targetAgents.length === 0) return "no_inbox_members";
   if (config.teamId && targetAgents.length === 0) return "no_team_members";
   if (config.teamId) return "no_online_team_candidates";
   return "no_online_candidates";

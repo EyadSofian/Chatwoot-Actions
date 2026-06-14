@@ -111,7 +111,7 @@ REOPEN_ROUTER_TEAM_ID=3
 Notes:
 
 - If the current assignee is `online` and inside the configured target team, the app does nothing. If the current assignee is outside that team, the app reroutes the conversation back to the target team.
-- If `REOPEN_ROUTER_TEAM_ID` is set, the app loads that team's members from Chatwoot and will only assign to online members of that team. It also sends `team_id` with the assignment.
+- If `REOPEN_ROUTER_TEAM_ID` is set, the app loads that team's members from Chatwoot and intersects them with the current inbox members. It will only assign to online agents who are in both the target team and the conversation inbox. It also sends `team_id` with the assignment.
 - The router only handles public incoming customer messages.
 - `REOPEN_ROUTER_INBOX_IDS` limits the automation to specific inboxes.
 - `REOPEN_ROUTER_AGENT_IDS` limits target agents to a safe online pool. When `REOPEN_ROUTER_TEAM_ID` is also set, this whitelist is applied inside that team only.
