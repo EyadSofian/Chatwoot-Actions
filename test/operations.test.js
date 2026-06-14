@@ -817,6 +817,70 @@ test("handleDepartmentRouterWebhook does not repeat the menu for invalid or dupl
   }
 });
 
+test("handleDepartmentRouterWebhook never prompts or routes broadcast conversations", async () => {
+  let writeCalls = 0;
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        contact_id: 10,
+        custom_attributes: {},
+        additional_attributes: { campaign_id: 88 },
+        meta: { assignee: { id: 4, name: "Old Agent" } }
+      }));
+      return;
+    }
+
+    writeCalls += 1;
+    res.end(JSON.stringify({ ok: true }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore();
+    const options = {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    };
+
+    const created = await handleDepartmentRouterWebhook({
+      event: "conversation_created",
+      id: 33,
+      inbox_id: 2,
+      additional_attributes: { campaign_id: 88 }
+    }, options);
+
+    assert.equal(created.skipped, true);
+    assert.equal(created.reason, "broadcast_conversation");
+    assert.equal((await stateStore.get(33)).state, "broadcast");
+
+    const reply = reopenPayload();
+    reply.message.content = "1";
+    const replied = await handleDepartmentRouterWebhook(reply, options);
+
+    assert.equal(replied.skipped, true);
+    assert.equal(replied.reason, "broadcast_conversation");
+    assert.equal(writeCalls, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("handleReopenRouterWebhook leaves conversations assigned to online agents", async () => {
   let assignmentCalled = false;
   const server = createServer((req, res) => {

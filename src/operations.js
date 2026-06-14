@@ -479,6 +479,35 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
     }
     let localRoute = await config.stateStore.get(conversationId);
 
+    if (config.skipCampaigns) {
+      const alreadyBroadcast = String(localRoute?.state || "").toLowerCase() === "broadcast";
+      const campaignId = getConversationCampaignId(conversation);
+      if (alreadyBroadcast || campaignId) {
+        if (!alreadyBroadcast) {
+          localRoute = await config.stateStore.save(conversationId, {
+            inboxId,
+            state: "broadcast",
+            campaignId: campaignId || null
+          });
+          await auditDepartmentRouter("department_router_broadcast_skipped", {
+            conversationId,
+            inboxId,
+            campaignId: campaignId || null,
+            event: eventName
+          }, config.audit);
+        }
+        return {
+          ok: true,
+          handled: true,
+          skipped: true,
+          reason: "broadcast_conversation",
+          conversationId,
+          inboxId,
+          campaignId: campaignId || localRoute?.campaignId || null
+        };
+      }
+    }
+
     if (eventName.includes("conversation_status_changed")) {
       const status = getWebhookConversationStatus(payload, conversation);
       if (status !== "resolved" || !config.promptOnResolved) {
@@ -610,6 +639,7 @@ function buildDepartmentRouterConfig(options = {}) {
     promptOnNew: parseBooleanOption(options.promptOnNew, process.env.DEPARTMENT_ROUTER_PROMPT_ON_NEW, true),
     promptOnResolved: parseBooleanOption(options.promptOnResolved, process.env.DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED, false),
     newContactsOnly: parseBooleanOption(options.newContactsOnly, process.env.DEPARTMENT_ROUTER_NEW_CONTACTS_ONLY, true),
+    skipCampaigns: parseBooleanOption(options.skipCampaigns, process.env.DEPARTMENT_ROUTER_SKIP_CAMPAIGNS, true),
     confirmSelection: parseBooleanOption(options.confirmSelection, process.env.DEPARTMENT_ROUTER_CONFIRM_SELECTION, true),
     promptText: String(options.promptText ?? process.env.DEPARTMENT_ROUTER_PROMPT_TEXT ??
       "أهلاً بك مع فريق Engosoft.\nللتواصل مع فريق المبيعات اكتب 1.\nللتواصل مع فريق العمليات اكتب 2."),
@@ -723,6 +753,20 @@ function getConversationContactId(conversation) {
     conversation?.contact?.id ||
     conversation?.meta?.sender?.id ||
     conversation?.sender?.id ||
+    null;
+}
+
+function getConversationCampaignId(conversation) {
+  if (!conversation) return null;
+  const additional = conversation.additional_attributes || conversation.additionalAttributes || {};
+  const meta = conversation.meta || {};
+  return conversation.campaign_id ||
+    conversation.campaignId ||
+    conversation.campaign?.id ||
+    additional.campaign_id ||
+    additional.campaignId ||
+    meta.campaign?.id ||
+    meta.campaign_id ||
     null;
 }
 
@@ -1025,6 +1069,14 @@ export async function handleReopenRouterWebhook(payload = {}, options = {}) {
     return { ok: true, skipped: true, reason: "inbox_not_enabled", conversationId, inboxId };
   }
 
+  if (config.skipCampaigns) {
+    const campaignId = getConversationCampaignId(conversation) ||
+      getConversationCampaignId(getWebhookConversation(payload, message));
+    if (campaignId) {
+      return { ok: true, skipped: true, reason: "broadcast_conversation", conversationId, inboxId, campaignId };
+    }
+  }
+
   const assignee = getConversationAssignee(conversation);
   const assigneeId = getConversationAssigneeId(conversation);
   if (!assigneeId && !config.assignUnassigned) {
@@ -1138,6 +1190,7 @@ function buildReopenRouterConfig(options = {}) {
       process.env.REOPEN_ROUTER_ASSIGN_UNASSIGNED,
       true
     ),
+    skipCampaigns: parseBooleanOption(options.skipCampaigns, process.env.REOPEN_ROUTER_SKIP_CAMPAIGNS, true),
     audit: options.audit !== false
   };
 }

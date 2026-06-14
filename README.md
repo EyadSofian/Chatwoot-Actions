@@ -132,6 +132,7 @@ DEPARTMENT_ROUTER_PROMPT_ON_NEW=true
 DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED=false
 DEPARTMENT_ROUTER_NEW_CONTACTS_ONLY=true
 DEPARTMENT_ROUTER_CONFIRM_SELECTION=true
+DEPARTMENT_ROUTER_SKIP_CAMPAIGNS=true
 ```
 
 Default customer menu:
@@ -148,6 +149,7 @@ Behavior:
 
 - New conversation: register it without sending anything. Send the menu once only after the first incoming customer message opens the WhatsApp service window.
 - Existing contact with any previous Chatwoot conversation: never send the department menu.
+- Broadcast/campaign conversation (the conversation carries a `campaign_id` because Chatwoot opened it for an outgoing broadcast): never send the menu and never reassign it, even when the customer later replies and even if the current agent is offline. Set `DEPARTMENT_ROUTER_SKIP_CAMPAIGNS=false` only if you want broadcasts to flow through the router. The reopen router honors the same guard via `REOPEN_ROUTER_SKIP_CAMPAIGNS`.
 - Resolved conversation: do not show the menu again by default. `DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED` must be explicitly enabled to change this.
 - While waiting for the department choice, remove any temporary agent assignment so the conversation cannot be handled by the wrong department.
 - Old open conversation already assigned to Sales Team `4` or Operations Team `3`: keep the same department and only move it when the current agent is not an eligible online team/inbox member.
