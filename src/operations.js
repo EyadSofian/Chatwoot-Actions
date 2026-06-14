@@ -641,6 +641,7 @@ function buildDepartmentRouterConfig(options = {}) {
     newContactsOnly: parseBooleanOption(options.newContactsOnly, process.env.DEPARTMENT_ROUTER_NEW_CONTACTS_ONLY, true),
     skipCampaigns: parseBooleanOption(options.skipCampaigns, process.env.DEPARTMENT_ROUTER_SKIP_CAMPAIGNS, true),
     assignAgent: parseBooleanOption(options.assignAgent, process.env.DEPARTMENT_ROUTER_ASSIGN_AGENT, true),
+    businessHours: buildBusinessHoursConfig(options),
     confirmSelection: parseBooleanOption(options.confirmSelection, process.env.DEPARTMENT_ROUTER_CONFIRM_SELECTION, true),
     promptText: String(options.promptText ?? process.env.DEPARTMENT_ROUTER_PROMPT_TEXT ??
       "أهلاً بك مع فريق Engosoft.\nللتواصل مع فريق المبيعات اكتب 1.\nللتواصل مع فريق العمليات اكتب 2."),
@@ -654,6 +655,67 @@ function buildDepartmentRouterConfig(options = {}) {
     },
     audit: options.audit !== false
   };
+}
+
+const WEEKDAY_INDEX = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+
+function buildBusinessHoursConfig(options = {}) {
+  if (options.businessHours) return options.businessHours;
+
+  const enabled = parseBooleanOption(
+    options.businessHoursEnabled,
+    process.env.DEPARTMENT_ROUTER_BUSINESS_HOURS_ENABLED,
+    false
+  );
+  if (!enabled) return { enabled: false };
+
+  return {
+    enabled: true,
+    timezone: String(options.businessTimezone ?? process.env.DEPARTMENT_ROUTER_BUSINESS_TIMEZONE ?? "Africa/Cairo"),
+    startMinutes: parseClockMinutes(options.businessStart ?? process.env.DEPARTMENT_ROUTER_BUSINESS_START, 9 * 60),
+    endMinutes: parseClockMinutes(options.businessEnd ?? process.env.DEPARTMENT_ROUTER_BUSINESS_END, 22 * 60),
+    days: new Set(
+      parseListOption(options.businessDays, process.env.DEPARTMENT_ROUTER_BUSINESS_DAYS, ["0", "1", "2", "3", "4", "5", "6"])
+        .map(value => Number(value))
+        .filter(value => Number.isInteger(value) && value >= 0 && value <= 6)
+    )
+  };
+}
+
+function parseClockMinutes(value, fallback) {
+  if (value == null || value === "") return fallback;
+  const match = String(value).trim().match(/^(\d{1,2}):?(\d{2})?$/);
+  if (!match) return fallback;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2] || 0);
+  if (hours > 23 || minutes > 59) return fallback;
+  return hours * 60 + minutes;
+}
+
+// Returns true when "now" falls inside the configured business hours for the
+// configured timezone. When business hours are disabled it returns true so the
+// router keeps its default (assign-an-online-agent) behavior.
+export function isWithinBusinessHours(businessHours, now) {
+  if (!businessHours?.enabled) return true;
+
+  const date = now || (typeof businessHours.now === "function" ? businessHours.now() : new Date());
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: businessHours.timezone,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+
+  const lookup = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  const dayIndex = WEEKDAY_INDEX[String(lookup.weekday || "").toLowerCase()];
+  if (dayIndex == null || !businessHours.days.has(dayIndex)) return false;
+
+  const minutesOfDay = Number(lookup.hour) * 60 + Number(lookup.minute);
+  const { startMinutes, endMinutes } = businessHours;
+  if (startMinutes === endMinutes) return false;
+  if (startMinutes < endMinutes) return minutesOfDay >= startMinutes && minutesOfDay < endMinutes;
+  return minutesOfDay >= startMinutes || minutesOfDay < endMinutes;
 }
 
 async function loadDepartmentConversation(client, payload, message, conversationId, eventName) {
@@ -884,11 +946,18 @@ async function routeConversationToDepartment(client, conversation, config, depar
     return { ok: true, handled: true, action: "kept_manual_assignment", ...details };
   }
 
+  // Decide whether to assign a specific agent. When business hours are enabled,
+  // assign an online agent inside business hours and fall back to team-only
+  // (Unassigned) outside business hours. Otherwise use the static flag.
+  const assignAgentNow = config.businessHours?.enabled
+    ? isWithinBusinessHours(config.businessHours)
+    : config.assignAgent;
+
   // Team-only mode: route to the correct team and leave the conversation
   // Unassigned so the team's agents pick it up themselves. Never auto-assign a
   // specific agent. The Chatwoot assignments endpoint ignores team_id when
   // assignee_id is present, so the team and the unassign are two separate calls.
-  if (!config.assignAgent) {
+  if (!assignAgentNow) {
     const assignmentResult = await client.assignConversation(conversationId, { team_id: Number(teamId) });
     if (currentAssigneeId) {
       await client.assignConversation(conversationId, { assignee_id: null });
