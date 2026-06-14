@@ -489,6 +489,74 @@ test("handleDepartmentRouterWebhook routes choice 1 to an online sales team inbo
   }
 });
 
+test("handleDepartmentRouterWebhook keeps a manual assignment even when that agent is offline", async () => {
+  let assignmentCalled = false;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        team_id: 4,
+        custom_attributes: {},
+        meta: {
+          sender: { id: 10, name: "Ahmed" },
+          // An admin manually assigned this offline agent; the router never did.
+          assignee: { id: 9, name: "Manually Picked Agent", availability_status: "offline" },
+          inbox: { id: 2, name: "WhatsApp" }
+        }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentCalled = true;
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      const body = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: body.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore();
+    const payload = reopenPayload();
+    payload.message.content = "عندي استفسار";
+    const result = await handleDepartmentRouterWebhook(payload, {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.action, "kept_manual_assignment");
+    assert.equal(result.toAgentId, 9);
+    assert.equal(assignmentCalled, false);
+    assert.equal((await stateStore.get(33)).manualAssignment, true);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("handleDepartmentRouterWebhook waits for the first incoming message before prompting a new contact", async () => {
   let customAttributesBody = null;
   let assignmentBody = null;

@@ -848,6 +848,41 @@ async function routeConversationToDepartment(client, conversation, config, depar
     throw new Error(`Missing ${department} team id for department router.`);
   }
 
+  const localRoute = await config.stateStore.get(conversationId);
+  const currentAssigneeId = getConversationAssigneeId(conversation);
+  const autoAssignedAgentId = localRoute?.autoAssignedAgentId != null ? String(localRoute.autoAssignedAgentId) : null;
+
+  // Respect manual assignments. A human moved this conversation if it currently
+  // has an assignee that the router did not assign itself. Once locked, the
+  // router never reassigns it again, even when that agent is offline.
+  const manuallyLocked = localRoute?.manualAssignment === true ||
+    (Boolean(currentAssigneeId) && String(currentAssigneeId) !== (autoAssignedAgentId || ""));
+
+  if (manuallyLocked) {
+    const updatedAttributes = await persistDepartmentState(client, conversation, config, {
+      [DEPARTMENT_ATTRIBUTES.department]: department,
+      [DEPARTMENT_ATTRIBUTES.state]: "routed",
+      [DEPARTMENT_ATTRIBUTES.teamId]: Number(teamId),
+      [DEPARTMENT_ATTRIBUTES.promptNext]: false,
+      [DEPARTMENT_ATTRIBUTES.routedAt]: new Date().toISOString()
+    });
+    await config.stateStore.save(conversationId, { manualAssignment: true });
+    const details = {
+      conversationId,
+      inboxId,
+      department,
+      teamId: Number(teamId),
+      fromAgentId: currentAssigneeId || null,
+      toAgentId: currentAssigneeId || null,
+      toAgentName: getAgentName(getConversationAssignee(conversation)),
+      reason,
+      manual: true,
+      updatedAttributes
+    };
+    await auditDepartmentRouter("department_router_kept_manual_assignment", details, config.audit);
+    return { ok: true, handled: true, action: "kept_manual_assignment", ...details };
+  }
+
   const [teamAgentsResponse, inboxAgentsResponse] = await Promise.all([
     client.listTeamAgents(teamId),
     client.listInboxAgents(inboxId)
@@ -855,7 +890,6 @@ async function routeConversationToDepartment(client, conversation, config, depar
   const teamAgents = normalizeRows(teamAgentsResponse);
   const inboxAgentIds = new Set(normalizeRows(inboxAgentsResponse).map(agent => String(getAgentId(agent))));
   const eligibleAgents = teamAgents.filter(agent => inboxAgentIds.has(String(getAgentId(agent))));
-  const currentAssigneeId = getConversationAssigneeId(conversation);
   const currentAgent = eligibleAgents.find(agent => String(getAgentId(agent)) === String(currentAssigneeId));
   const currentIsEligibleOnline = Boolean(currentAgent && getAgentAvailability(currentAgent) === "online");
 
@@ -883,6 +917,10 @@ async function routeConversationToDepartment(client, conversation, config, depar
     [DEPARTMENT_ATTRIBUTES.teamId]: Number(teamId),
     [DEPARTMENT_ATTRIBUTES.promptNext]: false,
     [DEPARTMENT_ATTRIBUTES.routedAt]: new Date().toISOString()
+  });
+  await config.stateStore.save(conversationId, {
+    autoAssignedAgentId: targetAgent ? String(getAgentId(targetAgent)) : null,
+    manualAssignment: false
   });
 
   if (config.confirmSelection && reason === "customer_selection") {
