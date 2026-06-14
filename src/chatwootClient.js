@@ -159,6 +159,13 @@ export class ChatwootClient {
     return this.request(this.accountPath(`/conversations/${conversationId}`));
   }
 
+  updateConversationCustomAttributes(conversationId, customAttributes) {
+    return this.request(this.accountPath(`/conversations/${conversationId}/custom_attributes`), {
+      method: "POST",
+      body: { custom_attributes: customAttributes }
+    });
+  }
+
   filterConversations({ payload, page = 1 }) {
     return this.request(this.accountPath("/conversations/filter"), {
       method: "POST",

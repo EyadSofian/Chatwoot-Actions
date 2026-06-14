@@ -5,6 +5,15 @@ const DEFAULT_STATUSES = ["open", "pending", "resolved", "snoozed"];
 const REOPEN_ROUTER_DEFAULT_UNAVAILABLE = ["offline", "busy", "away", "unavailable", "missing"];
 const REOPEN_ROUTER_DEFAULT_FALLBACK = "unassign";
 const reopenRouterCooldowns = new Map();
+const departmentRouterLocks = new Map();
+const DEPARTMENT_ATTRIBUTES = {
+  department: "engosoft_department",
+  state: "engosoft_department_route_state",
+  teamId: "engosoft_department_team_id",
+  promptNext: "engosoft_department_prompt_next",
+  promptedAt: "engosoft_department_prompted_at",
+  routedAt: "engosoft_department_routed_at"
+};
 
 export function makeClient(connection) {
   return new ChatwootClient(connection || {});
@@ -447,6 +456,372 @@ export async function getOpenConversationReport(connection, criteria = {}) {
     conversations,
     warnings
   };
+}
+
+export async function handleDepartmentRouterWebhook(payload = {}, options = {}) {
+  const config = buildDepartmentRouterConfig(options);
+  if (!config.enabled) return { ok: true, handled: false, skipped: true, reason: "department_router_disabled" };
+
+  const eventName = String(payload.event || payload.name || "").toLowerCase();
+  const message = getWebhookMessage(payload);
+  const conversationId = getWebhookConversationId(payload, message) ||
+    (eventName.startsWith("conversation_") ? payload?.id : null);
+  if (!conversationId) {
+    return { ok: false, handled: false, skipped: true, reason: "missing_conversation_id" };
+  }
+
+  return withDepartmentRouterLock(conversationId, async () => {
+    const client = makeClient(options.connection || {});
+    const conversation = await loadDepartmentConversation(client, payload, message, conversationId, eventName);
+    const inboxId = getConversationInboxId(conversation);
+    if (config.inboxIds.length && !config.inboxIds.includes(String(inboxId))) {
+      return { ok: true, handled: false, skipped: true, reason: "department_inbox_not_enabled", conversationId, inboxId };
+    }
+
+    if (eventName.includes("conversation_status_changed")) {
+      const status = getWebhookConversationStatus(payload, conversation);
+      if (status !== "resolved" || !config.promptOnResolved) {
+        return { ok: true, handled: false, skipped: true, reason: "department_status_ignored", conversationId, inboxId, status };
+      }
+
+      const customAttributes = await updateDepartmentAttributes(client, conversation, {
+        [DEPARTMENT_ATTRIBUTES.state]: "resolved",
+        [DEPARTMENT_ATTRIBUTES.promptNext]: true
+      });
+      await auditDepartmentRouter("department_router_marked_for_reentry", {
+        conversationId,
+        inboxId,
+        status,
+        customAttributes
+      }, config.audit);
+      return {
+        ok: true,
+        handled: true,
+        action: "marked_for_reentry",
+        conversationId,
+        inboxId,
+        status
+      };
+    }
+
+    if (eventName.includes("conversation_created")) {
+      if (!config.promptOnNew) {
+        return { ok: true, handled: false, skipped: true, reason: "new_prompt_disabled", conversationId, inboxId };
+      }
+      return promptForDepartment(client, conversation, config, { reason: "new_conversation" });
+    }
+
+    if (!eventName.includes("message_created") || !isIncomingWebhookMessage(payload, message)) {
+      return { ok: true, handled: false, skipped: true, reason: "department_event_ignored", conversationId, inboxId };
+    }
+
+    const content = String(message?.content || payload?.content || "");
+    const customAttributes = getConversationCustomAttributes(conversation);
+    const routeState = String(customAttributes[DEPARTMENT_ATTRIBUTES.state] || "").toLowerCase();
+    const promptNext = parseBooleanOption(customAttributes[DEPARTMENT_ATTRIBUTES.promptNext], undefined, false);
+
+    if (isDepartmentChangeRequest(content)) {
+      return promptForDepartment(client, conversation, config, { reason: "customer_requested_change", force: true });
+    }
+
+    if (promptNext) {
+      return promptForDepartment(client, conversation, config, { reason: "resolved_conversation_reopened", force: true });
+    }
+
+    const selection = parseDepartmentSelection(content);
+    if (routeState === "pending") {
+      if (selection) {
+        return routeConversationToDepartment(client, conversation, config, selection, "customer_selection");
+      }
+
+      if (shouldRepeatDepartmentPrompt(customAttributes, message)) {
+        return promptForDepartment(client, conversation, config, { reason: "invalid_selection", force: true });
+      }
+
+      return {
+        ok: true,
+        handled: true,
+        action: "awaiting_department",
+        conversationId,
+        inboxId
+      };
+    }
+
+    const knownDepartment = getKnownConversationDepartment(conversation, config);
+    if (knownDepartment) {
+      return routeConversationToDepartment(client, conversation, config, knownDepartment, "existing_department");
+    }
+
+    return promptForDepartment(client, conversation, config, { reason: "department_unknown" });
+  });
+}
+
+function buildDepartmentRouterConfig(options = {}) {
+  return {
+    enabled: parseBooleanOption(options.enabled, process.env.DEPARTMENT_ROUTER_ENABLED, false),
+    inboxIds: parseListOption(options.inboxIds, process.env.DEPARTMENT_ROUTER_INBOX_IDS, []).map(String),
+    salesTeamId: String(options.salesTeamId ?? process.env.DEPARTMENT_ROUTER_SALES_TEAM_ID ?? ""),
+    operationsTeamId: String(options.operationsTeamId ?? process.env.DEPARTMENT_ROUTER_OPERATIONS_TEAM_ID ?? ""),
+    promptOnNew: parseBooleanOption(options.promptOnNew, process.env.DEPARTMENT_ROUTER_PROMPT_ON_NEW, true),
+    promptOnResolved: parseBooleanOption(options.promptOnResolved, process.env.DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED, true),
+    confirmSelection: parseBooleanOption(options.confirmSelection, process.env.DEPARTMENT_ROUTER_CONFIRM_SELECTION, true),
+    promptText: String(options.promptText ?? process.env.DEPARTMENT_ROUTER_PROMPT_TEXT ??
+      "أهلاً بك مع فريق Engosoft.\nللتواصل مع فريق المبيعات اكتب 1.\nللتواصل مع فريق العمليات اكتب 2."),
+    salesConfirmationText: String(options.salesConfirmationText ?? process.env.DEPARTMENT_ROUTER_SALES_CONFIRMATION_TEXT ??
+      "تم تحويل محادثتك إلى فريق المبيعات، وسيتم الرد عليك في أقرب وقت."),
+    operationsConfirmationText: String(options.operationsConfirmationText ?? process.env.DEPARTMENT_ROUTER_OPERATIONS_CONFIRMATION_TEXT ??
+      "تم تحويل محادثتك إلى فريق العمليات، وسيتم الرد عليك في أقرب وقت."),
+    audit: options.audit !== false
+  };
+}
+
+async function loadDepartmentConversation(client, payload, message, conversationId, eventName) {
+  try {
+    const response = await client.conversationDetails(conversationId);
+    return unwrapConversationResponse(response) || {};
+  } catch (error) {
+    const conversation = getWebhookConversation(payload, message) ||
+      (eventName.startsWith("conversation_") ? payload : null);
+    if (conversation) return conversation;
+    throw error;
+  }
+}
+
+async function promptForDepartment(client, conversation, config, { reason, force = false } = {}) {
+  const conversationId = conversation.id;
+  const inboxId = getConversationInboxId(conversation);
+  const customAttributes = getConversationCustomAttributes(conversation);
+  const routeState = String(customAttributes[DEPARTMENT_ATTRIBUTES.state] || "").toLowerCase();
+  const promptedAt = Date.parse(customAttributes[DEPARTMENT_ATTRIBUTES.promptedAt] || "");
+  const recentlyPrompted = Number.isFinite(promptedAt) && Date.now() - promptedAt < 15000;
+
+  if (!force && routeState === "pending" && recentlyPrompted) {
+    return {
+      ok: true,
+      handled: true,
+      action: "prompt_already_sent",
+      conversationId,
+      inboxId,
+      reason
+    };
+  }
+
+  if (getConversationAssigneeId(conversation)) {
+    await client.assignConversation(conversationId, { assignee_id: null });
+  }
+
+  const message = await client.createMessage(conversationId, {
+    content: config.promptText,
+    message_type: "outgoing",
+    private: false,
+    content_type: "text",
+    content_attributes: {}
+  });
+  const updatedAttributes = await updateDepartmentAttributes(client, conversation, {
+    [DEPARTMENT_ATTRIBUTES.state]: "pending",
+    [DEPARTMENT_ATTRIBUTES.promptNext]: false,
+    [DEPARTMENT_ATTRIBUTES.promptedAt]: new Date().toISOString()
+  });
+  await auditDepartmentRouter("department_router_prompted", {
+    conversationId,
+    inboxId,
+    reason,
+    updatedAttributes
+  }, config.audit);
+  return {
+    ok: true,
+    handled: true,
+    action: "department_prompt_sent",
+    conversationId,
+    inboxId,
+    reason,
+    messageId: message?.id || null
+  };
+}
+
+async function routeConversationToDepartment(client, conversation, config, department, reason) {
+  const conversationId = conversation.id;
+  const inboxId = getConversationInboxId(conversation);
+  const teamId = department === "sales" ? config.salesTeamId : config.operationsTeamId;
+  if (!teamId) {
+    throw new Error(`Missing ${department} team id for department router.`);
+  }
+
+  const [teamAgentsResponse, inboxAgentsResponse] = await Promise.all([
+    client.listTeamAgents(teamId),
+    client.listInboxAgents(inboxId)
+  ]);
+  const teamAgents = normalizeRows(teamAgentsResponse);
+  const inboxAgentIds = new Set(normalizeRows(inboxAgentsResponse).map(agent => String(getAgentId(agent))));
+  const eligibleAgents = teamAgents.filter(agent => inboxAgentIds.has(String(getAgentId(agent))));
+  const currentAssigneeId = getConversationAssigneeId(conversation);
+  const currentTeamId = getConversationTeamId(conversation);
+  const currentAgent = eligibleAgents.find(agent => String(getAgentId(agent)) === String(currentAssigneeId));
+  const currentIsEligibleOnline = Boolean(currentAgent && getAgentAvailability(currentAgent) === "online");
+
+  let action = "kept_current_agent";
+  let targetAgent = currentAgent || null;
+  let assignmentResult = null;
+
+  if (!currentIsEligibleOnline || String(currentTeamId || "") !== String(teamId)) {
+    const onlineAgents = orderReopenRouterCandidates(
+      eligibleAgents.filter(agent => getAgentAvailability(agent) === "online"),
+      conversationId
+    );
+    targetAgent = onlineAgents.find(agent => String(getAgentId(agent)) !== String(currentAssigneeId)) || onlineAgents[0] || null;
+    const assignmentPayload = {
+      team_id: Number(teamId),
+      assignee_id: targetAgent ? Number(getAgentId(targetAgent)) : null
+    };
+    assignmentResult = await client.assignConversation(conversationId, assignmentPayload);
+    action = targetAgent ? "department_assigned" : "department_team_queue";
+  }
+
+  const updatedAttributes = await updateDepartmentAttributes(client, conversation, {
+    [DEPARTMENT_ATTRIBUTES.department]: department,
+    [DEPARTMENT_ATTRIBUTES.state]: "routed",
+    [DEPARTMENT_ATTRIBUTES.teamId]: Number(teamId),
+    [DEPARTMENT_ATTRIBUTES.promptNext]: false,
+    [DEPARTMENT_ATTRIBUTES.routedAt]: new Date().toISOString()
+  });
+
+  if (config.confirmSelection && reason === "customer_selection") {
+    await client.createMessage(conversationId, {
+      content: department === "sales" ? config.salesConfirmationText : config.operationsConfirmationText,
+      message_type: "outgoing",
+      private: false,
+      content_type: "text",
+      content_attributes: {}
+    });
+  }
+
+  const details = {
+    conversationId,
+    inboxId,
+    department,
+    teamId: Number(teamId),
+    fromAgentId: currentAssigneeId || null,
+    toAgentId: targetAgent ? Number(getAgentId(targetAgent)) : null,
+    toAgentName: getAgentName(targetAgent),
+    reason,
+    eligibleAgentCount: eligibleAgents.length,
+    updatedAttributes
+  };
+  await auditDepartmentRouter(`department_router_${action}`, details, config.audit);
+  return {
+    ok: true,
+    handled: true,
+    action,
+    ...details,
+    result: assignmentResult
+  };
+}
+
+async function updateDepartmentAttributes(client, conversation, changes) {
+  const merged = {
+    ...getConversationCustomAttributes(conversation),
+    ...changes
+  };
+  const response = await client.updateConversationCustomAttributes(conversation.id, merged);
+  conversation.custom_attributes = response?.custom_attributes || merged;
+  return conversation.custom_attributes;
+}
+
+function getConversationCustomAttributes(conversation) {
+  return conversation?.custom_attributes || conversation?.customAttributes || {};
+}
+
+function getConversationTeamId(conversation) {
+  return conversation?.team_id || conversation?.team?.id || conversation?.meta?.team?.id || null;
+}
+
+function getWebhookConversationStatus(payload, conversation) {
+  return String(payload?.status || payload?.conversation?.status || conversation?.status || "").toLowerCase();
+}
+
+function getKnownConversationDepartment(conversation, config) {
+  const customAttributes = getConversationCustomAttributes(conversation);
+  const saved = String(customAttributes[DEPARTMENT_ATTRIBUTES.department] || "").toLowerCase();
+  if (saved === "sales" || saved === "operations") return saved;
+
+  const teamId = String(
+    customAttributes[DEPARTMENT_ATTRIBUTES.teamId] ||
+    getConversationTeamId(conversation) ||
+    ""
+  );
+  if (teamId && teamId === config.salesTeamId) return "sales";
+  if (teamId && teamId === config.operationsTeamId) return "operations";
+  return null;
+}
+
+export function parseDepartmentSelection(content) {
+  const normalized = normalizeDepartmentText(content);
+  if (["1", "01"].includes(normalized)) return "sales";
+  if (["2", "02"].includes(normalized)) return "operations";
+
+  if (["sales", "sale", "sales team", "مبيعات", "المبيعات", "سيلز", "ريسيل", "ري سيل"].includes(normalized)) {
+    return "sales";
+  }
+  if (["operations", "operation", "ops", "operations team", "عمليات", "العمليات", "اوبريشن", "أوبريشن", "تشغيل"].includes(normalized)) {
+    return "operations";
+  }
+  return null;
+}
+
+function isDepartmentChangeRequest(content) {
+  const normalized = normalizeDepartmentText(content);
+  return [
+    "تغيير القسم",
+    "غير القسم",
+    "غيّر القسم",
+    "القائمة",
+    "اختيار القسم",
+    "change department",
+    "change team",
+    "menu"
+  ].includes(normalized);
+}
+
+function normalizeDepartmentText(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[٠-٩]/g, digit => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
+    .replace(/[۰-۹]/g, digit => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)))
+    .replace(/[\u064B-\u065F\u0670]/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function shouldRepeatDepartmentPrompt(customAttributes, message) {
+  const promptedAt = Date.parse(customAttributes[DEPARTMENT_ATTRIBUTES.promptedAt] || "");
+  if (Number.isFinite(promptedAt) && Date.now() - promptedAt < 15000) return false;
+  const messageAt = getMessageTimeMs(message);
+  if (!Number.isFinite(promptedAt) || !Number.isFinite(messageAt)) return true;
+  return messageAt - promptedAt > 5000;
+}
+
+async function auditDepartmentRouter(action, details, enabled = true) {
+  if (!enabled) return;
+  await appendAudit({
+    action,
+    actor: { name: "Department Router", type: "automation" },
+    summary: `Department router ${action} for conversation ${details.conversationId}`,
+    metadata: details
+  });
+}
+
+async function withDepartmentRouterLock(conversationId, worker) {
+  const key = String(conversationId);
+  const previous = departmentRouterLocks.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(worker);
+  departmentRouterLocks.set(key, current);
+  try {
+    return await current;
+  } finally {
+    if (departmentRouterLocks.get(key) === current) departmentRouterLocks.delete(key);
+  }
 }
 
 export async function handleReopenRouterWebhook(payload = {}, options = {}) {

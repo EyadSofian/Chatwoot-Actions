@@ -71,7 +71,7 @@ Use `/api/health` as the healthcheck path.
 https://your-ops-console.example.com/api/webhooks/chatwoot
 ```
 
-Subscribe at least to `message_created`, `message_updated`, `conversation_updated`, and `contact_updated`.
+Subscribe at least to `conversation_created`, `conversation_status_changed`, and `message_created`. The other events can remain enabled for reporting.
 
 If `OPS_PASSWORD` is enabled, set `WEBHOOK_SECRET` to the same secret configured in Chatwoot. Chatwoot will sign webhook requests with `X-Chatwoot-Signature`, and this app will verify that signature.
 
@@ -116,6 +116,43 @@ Notes:
 - `REOPEN_ROUTER_INBOX_IDS` limits the automation to specific inboxes.
 - `REOPEN_ROUTER_AGENT_IDS` limits target agents to a safe online pool. When `REOPEN_ROUTER_TEAM_ID` is also set, this whitelist is applied inside that team only.
 - Each router decision is saved in local webhook events and the local audit log.
+
+## Department Router
+
+The Department Router asks new customers to choose Sales or Operations, then assigns the conversation only to an online agent who is both a member of the selected team and a member of the current inbox.
+
+Railway configuration for Engosoft:
+
+```text
+DEPARTMENT_ROUTER_ENABLED=true
+DEPARTMENT_ROUTER_INBOX_IDS=27
+DEPARTMENT_ROUTER_SALES_TEAM_ID=4
+DEPARTMENT_ROUTER_OPERATIONS_TEAM_ID=3
+DEPARTMENT_ROUTER_PROMPT_ON_NEW=true
+DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED=true
+DEPARTMENT_ROUTER_CONFIRM_SELECTION=true
+```
+
+Default customer menu:
+
+```text
+أهلاً بك مع فريق Engosoft.
+للتواصل مع فريق المبيعات اكتب 1.
+للتواصل مع فريق العمليات اكتب 2.
+```
+
+The parser accepts `1`, Arabic `١`, Sales/مبيعات/سيلز and `2`, Arabic `٢`, Operations/عمليات/أوبريشن. It only treats a reply as a department choice while the conversation is waiting for a choice. The customer can send `تغيير القسم` to show the menu again.
+
+Behavior:
+
+- New conversation: send the menu once.
+- Resolved conversation: mark it to show the menu on the customer's next message.
+- While waiting for the department choice, remove any temporary agent assignment so the conversation cannot be handled by the wrong department.
+- Old open conversation already assigned to Sales Team `4` or Operations Team `3`: keep the same department and only move it when the current agent is not an eligible online team/inbox member.
+- No online eligible member: assign the selected team and leave the agent unassigned so nobody outside the team receives the conversation.
+- Routing state is stored in Chatwoot conversation custom attributes, so it survives app redeploys.
+
+For WhatsApp, the default menu is text-based because it works reliably for every provider. Chatwoot supports interactive message content types, but WhatsApp reply buttons generally require a compatible provider flow or an approved WhatsApp template. Keep the text menu unless the WhatsApp integration has a tested interactive template.
 
 ## Operator flow
 

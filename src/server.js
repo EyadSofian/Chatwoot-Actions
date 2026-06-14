@@ -13,6 +13,7 @@ import {
   executePhoneAssign,
   getOpenConversationReport,
   getReportsSummary,
+  handleDepartmentRouterWebhook,
   handleReopenRouterWebhook,
   makeClient,
   parsePhoneAssignInput,
@@ -204,17 +205,20 @@ async function route(req, res) {
     const body = parseJsonBody(rawBody);
     let router = null;
     try {
-      router = await handleReopenRouterWebhook(body);
+      const departmentRouter = await handleDepartmentRouterWebhook(body);
+      router = departmentRouter.handled
+        ? departmentRouter
+        : await handleReopenRouterWebhook(body);
     } catch (error) {
       router = {
         ok: false,
-        reason: "reopen_router_error",
-        error: error.message || "Unexpected reopen router error"
+        reason: "webhook_automation_error",
+        error: error.message || "Unexpected webhook automation error"
       };
       try {
         await appendAudit({
-          action: "reopen_router_error",
-          actor: { name: "Reopen Router", type: "automation" },
+          action: "webhook_automation_error",
+          actor: { name: "Webhook Automation", type: "automation" },
           summary: router.error,
           metadata: { event: body.event || body.name || "", body }
         });

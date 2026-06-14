@@ -5,8 +5,10 @@ import {
   buildPhoneAssignPreview,
   extractPhoneNumbers,
   getOpenConversationReport,
+  handleDepartmentRouterWebhook,
   handleReopenRouterWebhook,
   normalizePhone,
+  parseDepartmentSelection,
   parsePhoneAssignInput
 } from "../src/operations.js";
 
@@ -27,6 +29,16 @@ test("extractPhoneNumbers reads mixed CSV-style content and deduplicates", () =>
     { inputPhone: "966558262332", normalizedPhone: "966558262332" },
     { inputPhone: "+966 56 696 9482", normalizedPhone: "966566969482" }
   ]);
+});
+
+test("parseDepartmentSelection understands numeric, Arabic, and English replies", () => {
+  assert.equal(parseDepartmentSelection("1"), "sales");
+  assert.equal(parseDepartmentSelection("١"), "sales");
+  assert.equal(parseDepartmentSelection("المبيعات"), "sales");
+  assert.equal(parseDepartmentSelection("2"), "operations");
+  assert.equal(parseDepartmentSelection("٢"), "operations");
+  assert.equal(parseDepartmentSelection("Operations"), "operations");
+  assert.equal(parseDepartmentSelection("محتاج مساعدة"), null);
 });
 
 test("buildPhoneAssignPreview matches phone contacts and conversations", async () => {
@@ -371,6 +383,238 @@ test("handleReopenRouterWebhook assigns incoming reopened conversations to an on
     assert.equal(result.fromAgentStatus, "offline");
     assert.equal(result.toAgentId, 7);
     assert.deepEqual(assignmentBody, { assignee_id: 7 });
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook routes choice 1 to an online sales team inbox member", async () => {
+  let assignmentBody = null;
+  let customAttributesBody = null;
+  const outgoingMessages = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: {
+          engosoft_department_route_state: "pending"
+        },
+        meta: {
+          sender: { id: 10, name: "Ahmed" },
+          assignee: null,
+          inbox: { id: 2, name: "WhatsApp" }
+        }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/teams/4/team_members") {
+      res.end(JSON.stringify([
+        { id: 7, name: "Sales Online", availability_status: "online" },
+        { id: 9, name: "Sales Outside Inbox", availability_status: "online" }
+      ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
+      res.end(JSON.stringify({
+        payload: [
+          { id: 7, name: "Sales Online", availability_status: "online" }
+        ]
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentBody = await readRequestJson(req);
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 501 }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const payload = reopenPayload();
+    payload.message.content = "1";
+    const result = await handleDepartmentRouterWebhook(payload, {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      audit: false
+    });
+
+    assert.equal(result.handled, true);
+    assert.equal(result.action, "department_assigned");
+    assert.equal(result.department, "sales");
+    assert.equal(result.teamId, 4);
+    assert.equal(result.toAgentId, 7);
+    assert.deepEqual(assignmentBody, { team_id: 4, assignee_id: 7 });
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department, "sales");
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "routed");
+    assert.equal(outgoingMessages.length, 1);
+    assert.match(outgoingMessages[0].content, /المبيعات/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook sends the department menu for a new conversation", async () => {
+  let customAttributesBody = null;
+  let assignmentBody = null;
+  const outgoingMessages = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: {},
+        meta: {
+          assignee: { id: 4, name: "Temporary Agent" }
+        }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentBody = await readRequestJson(req);
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 500 }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleDepartmentRouterWebhook({
+      event: "conversation_created",
+      id: 33,
+      inbox_id: 2
+    }, {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      audit: false
+    });
+
+    assert.equal(result.handled, true);
+    assert.equal(result.action, "department_prompt_sent");
+    assert.equal(outgoingMessages.length, 1);
+    assert.match(outgoingMessages[0].content, /اكتب 1/);
+    assert.match(outgoingMessages[0].content, /اكتب 2/);
+    assert.deepEqual(assignmentBody, { assignee_id: null });
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "pending");
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_prompt_next, false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook marks resolved conversations to prompt on the next reply", async () => {
+  let customAttributesBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "resolved",
+        inbox_id: 2,
+        custom_attributes: {
+          engosoft_department: "sales",
+          engosoft_department_team_id: 4
+        }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleDepartmentRouterWebhook({
+      event: "conversation_status_changed",
+      id: 33,
+      status: "resolved",
+      inbox_id: 2
+    }, {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      audit: false
+    });
+
+    assert.equal(result.handled, true);
+    assert.equal(result.action, "marked_for_reentry");
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_prompt_next, true);
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "resolved");
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
