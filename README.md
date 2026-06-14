@@ -133,7 +133,10 @@ DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED=false
 DEPARTMENT_ROUTER_NEW_CONTACTS_ONLY=true
 DEPARTMENT_ROUTER_CONFIRM_SELECTION=true
 DEPARTMENT_ROUTER_SKIP_CAMPAIGNS=true
+DEPARTMENT_ROUTER_ASSIGN_AGENT=false
 ```
+
+`DEPARTMENT_ROUTER_ASSIGN_AGENT=false` makes the router send the menu and, after the customer picks `1` or `2`, assign the conversation to the chosen team **without** assigning a specific agent. The conversation stays Unassigned so the team's agents pick it up themselves. The Chatwoot assignments endpoint ignores `team_id` when `assignee_id` is present, so the router sets the team and clears the assignee in two separate calls. With the default `true`, the router instead assigns an online member of the team and inbox.
 
 Default customer menu:
 

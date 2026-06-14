@@ -640,6 +640,7 @@ function buildDepartmentRouterConfig(options = {}) {
     promptOnResolved: parseBooleanOption(options.promptOnResolved, process.env.DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED, false),
     newContactsOnly: parseBooleanOption(options.newContactsOnly, process.env.DEPARTMENT_ROUTER_NEW_CONTACTS_ONLY, true),
     skipCampaigns: parseBooleanOption(options.skipCampaigns, process.env.DEPARTMENT_ROUTER_SKIP_CAMPAIGNS, true),
+    assignAgent: parseBooleanOption(options.assignAgent, process.env.DEPARTMENT_ROUTER_ASSIGN_AGENT, true),
     confirmSelection: parseBooleanOption(options.confirmSelection, process.env.DEPARTMENT_ROUTER_CONFIRM_SELECTION, true),
     promptText: String(options.promptText ?? process.env.DEPARTMENT_ROUTER_PROMPT_TEXT ??
       "أهلاً بك مع فريق Engosoft.\nللتواصل مع فريق المبيعات اكتب 1.\nللتواصل مع فريق العمليات اكتب 2."),
@@ -881,6 +882,49 @@ async function routeConversationToDepartment(client, conversation, config, depar
     };
     await auditDepartmentRouter("department_router_kept_manual_assignment", details, config.audit);
     return { ok: true, handled: true, action: "kept_manual_assignment", ...details };
+  }
+
+  // Team-only mode: route to the correct team and leave the conversation
+  // Unassigned so the team's agents pick it up themselves. Never auto-assign a
+  // specific agent. The Chatwoot assignments endpoint ignores team_id when
+  // assignee_id is present, so the team and the unassign are two separate calls.
+  if (!config.assignAgent) {
+    const assignmentResult = await client.assignConversation(conversationId, { team_id: Number(teamId) });
+    if (currentAssigneeId) {
+      await client.assignConversation(conversationId, { assignee_id: null });
+    }
+    const updatedAttributes = await persistDepartmentState(client, conversation, config, {
+      [DEPARTMENT_ATTRIBUTES.department]: department,
+      [DEPARTMENT_ATTRIBUTES.state]: "routed",
+      [DEPARTMENT_ATTRIBUTES.teamId]: Number(teamId),
+      [DEPARTMENT_ATTRIBUTES.promptNext]: false,
+      [DEPARTMENT_ATTRIBUTES.routedAt]: new Date().toISOString()
+    });
+    await config.stateStore.save(conversationId, { autoAssignedAgentId: null, manualAssignment: false });
+
+    if (config.confirmSelection && reason === "customer_selection") {
+      await client.createMessage(conversationId, {
+        content: department === "sales" ? config.salesConfirmationText : config.operationsConfirmationText,
+        message_type: "outgoing",
+        private: false,
+        content_type: "text",
+        content_attributes: {}
+      });
+    }
+
+    const details = {
+      conversationId,
+      inboxId,
+      department,
+      teamId: Number(teamId),
+      fromAgentId: currentAssigneeId || null,
+      toAgentId: null,
+      toAgentName: "",
+      reason,
+      updatedAttributes
+    };
+    await auditDepartmentRouter("department_router_department_team_unassigned", details, config.audit);
+    return { ok: true, handled: true, action: "department_team_unassigned", ...details, result: assignmentResult };
   }
 
   const [teamAgentsResponse, inboxAgentsResponse] = await Promise.all([

@@ -489,6 +489,83 @@ test("handleDepartmentRouterWebhook routes choice 1 to an online sales team inbo
   }
 });
 
+test("handleDepartmentRouterWebhook can route a choice to the team and leave it unassigned", async () => {
+  const assignmentBodies = [];
+  let teamAgentsCalled = false;
+  let customAttributesBody = null;
+  const outgoingMessages = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: { engosoft_department_route_state: "pending" },
+        meta: { sender: { id: 10, name: "Ahmed" }, assignee: null, inbox: { id: 2, name: "WhatsApp" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/teams/4/team_members") {
+      teamAgentsCalled = true;
+      res.end(JSON.stringify([{ id: 7, name: "Sales", availability_status: "online" }]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentBodies.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 502 }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore({ 33: { conversationId: 33, state: "pending" } });
+    const payload = reopenPayload();
+    payload.message.content = "1";
+    const result = await handleDepartmentRouterWebhook(payload, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      assignAgent: false,
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.action, "department_team_unassigned");
+    assert.equal(result.department, "sales");
+    assert.equal(result.toAgentId, null);
+    assert.deepEqual(assignmentBodies, [{ team_id: 4 }]);
+    assert.equal(teamAgentsCalled, false);
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "routed");
+    assert.match(outgoingMessages[0].content, /المبيعات/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("handleDepartmentRouterWebhook keeps a manual assignment even when that agent is offline", async () => {
   let assignmentCalled = false;
   const server = createServer(async (req, res) => {
