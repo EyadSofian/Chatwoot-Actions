@@ -38,7 +38,10 @@ test("parseDepartmentSelection understands numeric, Arabic, and English replies"
   assert.equal(parseDepartmentSelection("المبيعات"), "sales");
   assert.equal(parseDepartmentSelection("2"), "operations");
   assert.equal(parseDepartmentSelection("٢"), "operations");
+  assert.equal(parseDepartmentSelection("3"), "complaints");
   assert.equal(parseDepartmentSelection("Operations"), "operations");
+  assert.equal(parseDepartmentSelection("دعم المتدربين"), "operations");
+  assert.equal(parseDepartmentSelection("شكاوي"), "complaints");
   assert.equal(parseDepartmentSelection("محتاج مساعدة"), null);
 });
 
@@ -408,8 +411,8 @@ test("handleReopenRouterWebhook assigns incoming reopened conversations to an on
   }
 });
 
-test("handleDepartmentRouterWebhook routes choice 1 to an online sales team inbox member", async () => {
-  let assignmentBody = null;
+test("handleDepartmentRouterWebhook routes choice 1 to a resale team inbox member even when offline", async () => {
+  const assignmentBodies = [];
   let customAttributesBody = null;
   const outgoingMessages = [];
   const server = createServer(async (req, res) => {
@@ -435,8 +438,8 @@ test("handleDepartmentRouterWebhook routes choice 1 to an online sales team inbo
 
     if (url.pathname === "/api/v1/accounts/1/teams/4/team_members") {
       res.end(JSON.stringify([
-        { id: 7, name: "Sales Online", availability_status: "online" },
-        { id: 9, name: "Sales Outside Inbox", availability_status: "online" }
+        { id: 7, name: "Resale Offline", availability_status: "offline" },
+        { id: 9, name: "Resale Outside Inbox", availability_status: "online" }
       ]));
       return;
     }
@@ -444,14 +447,14 @@ test("handleDepartmentRouterWebhook routes choice 1 to an online sales team inbo
     if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
       res.end(JSON.stringify({
         payload: [
-          { id: 7, name: "Sales Online", availability_status: "online" }
+          { id: 7, name: "Resale Offline", availability_status: "offline" }
         ]
       }));
       return;
     }
 
     if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
-      assignmentBody = await readRequestJson(req);
+      assignmentBodies.push(await readRequestJson(req));
       res.end(JSON.stringify({ ok: true }));
       return;
     }
@@ -495,17 +498,17 @@ test("handleDepartmentRouterWebhook routes choice 1 to an online sales team inbo
     });
 
     assert.equal(result.handled, true);
-    assert.equal(result.action, "department_assigned");
+    assert.equal(result.action, "department_assigned_any_status");
     assert.equal(result.department, "sales");
     assert.equal(result.teamId, 4);
     assert.equal(result.toAgentId, 7);
-    assert.deepEqual(assignmentBody, { team_id: 4, assignee_id: 7 });
+    assert.deepEqual(assignmentBodies, [{ team_id: 4 }, { assignee_id: 7 }]);
     assert.equal(customAttributesBody.custom_attributes.engosoft_department, "sales");
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "routed");
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_auto_assigned_agent_id, "7");
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_manual_assignment, false);
     assert.equal(outgoingMessages.length, 1);
-    assert.match(outgoingMessages[0].content, /المبيعات/);
+    assert.match(outgoingMessages[0].content, /صبرك/);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -529,9 +532,9 @@ test("handleDepartmentRouterWebhook routes to the team unassigned outside busine
       return;
     }
 
-    if (url.pathname === "/api/v1/accounts/1/teams/4/team_members") {
+    if (url.pathname === "/api/v1/accounts/1/teams/3/team_members") {
       teamAgentsCalled = true;
-      res.end(JSON.stringify([{ id: 7, name: "Sales", availability_status: "online" }]));
+      res.end(JSON.stringify([{ id: 7, name: "Operations", availability_status: "online" }]));
       return;
     }
 
@@ -561,7 +564,7 @@ test("handleDepartmentRouterWebhook routes to the team unassigned outside busine
     const { port } = server.address();
     const stateStore = createMemoryDepartmentStateStore({ 33: { conversationId: 33, state: "pending" } });
     const payload = reopenPayload();
-    payload.message.content = "1";
+    payload.message.content = "2";
     const result = await handleDepartmentRouterWebhook(payload, {
       connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
       enabled: true,
@@ -582,7 +585,8 @@ test("handleDepartmentRouterWebhook routes to the team unassigned outside busine
     });
 
     assert.equal(result.action, "department_team_unassigned");
-    assert.deepEqual(assignmentBodies, [{ team_id: 4 }]);
+    assert.equal(result.department, "operations");
+    assert.deepEqual(assignmentBodies, [{ team_id: 3 }]);
     assert.equal(teamAgentsCalled, false);
   } finally {
     await new Promise(resolve => server.close(resolve));
@@ -609,9 +613,9 @@ test("handleDepartmentRouterWebhook can route a choice to the team and leave it 
       return;
     }
 
-    if (url.pathname === "/api/v1/accounts/1/teams/4/team_members") {
+    if (url.pathname === "/api/v1/accounts/1/teams/3/team_members") {
       teamAgentsCalled = true;
-      res.end(JSON.stringify([{ id: 7, name: "Sales", availability_status: "online" }]));
+      res.end(JSON.stringify([{ id: 7, name: "Operations", availability_status: "online" }]));
       return;
     }
 
@@ -642,7 +646,7 @@ test("handleDepartmentRouterWebhook can route a choice to the team and leave it 
     const { port } = server.address();
     const stateStore = createMemoryDepartmentStateStore({ 33: { conversationId: 33, state: "pending" } });
     const payload = reopenPayload();
-    payload.message.content = "1";
+    payload.message.content = "2";
     const result = await handleDepartmentRouterWebhook(payload, {
       connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
       enabled: true,
@@ -655,12 +659,333 @@ test("handleDepartmentRouterWebhook can route a choice to the team and leave it 
     });
 
     assert.equal(result.action, "department_team_unassigned");
-    assert.equal(result.department, "sales");
+    assert.equal(result.department, "operations");
     assert.equal(result.toAgentId, null);
-    assert.deepEqual(assignmentBodies, [{ team_id: 4 }]);
+    assert.deepEqual(assignmentBodies, [{ team_id: 3 }]);
     assert.equal(teamAgentsCalled, false);
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "routed");
-    assert.match(outgoingMessages[0].content, /المبيعات/);
+    assert.match(outgoingMessages[0].content, /الاسم الثلاثي/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook routes trainee support to an online operations team inbox member", async () => {
+  const assignmentBodies = [];
+  let customAttributesBody = null;
+  const outgoingMessages = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: { engosoft_department_route_state: "pending" },
+        meta: { sender: { id: 10, name: "Ahmed" }, assignee: null, inbox: { id: 2, name: "WhatsApp" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/teams/3/team_members") {
+      res.end(JSON.stringify([
+        { id: 8, name: "Operations Online", availability_status: "online" },
+        { id: 9, name: "Operations Offline", availability_status: "offline" }
+      ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
+      res.end(JSON.stringify({
+        payload: [
+          { id: 8, name: "Operations Online", availability_status: "online" },
+          { id: 9, name: "Operations Offline", availability_status: "offline" }
+        ]
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentBodies.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 504 }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore({ 33: { conversationId: 33, state: "pending" } });
+    const payload = reopenPayload();
+    payload.message.content = "2";
+    const result = await handleDepartmentRouterWebhook(payload, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.action, "department_assigned");
+    assert.equal(result.department, "operations");
+    assert.equal(result.toAgentId, 8);
+    assert.deepEqual(assignmentBodies, [{ team_id: 3 }, { assignee_id: 8 }]);
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department, "operations");
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_auto_assigned_agent_id, "8");
+    assert.equal(outgoingMessages.length, 1);
+    assert.match(outgoingMessages[0].content, /الاسم الثلاثي/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook queues trainee support when no online operations agent exists", async () => {
+  const assignmentBodies = [];
+  const outgoingMessages = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: { engosoft_department_route_state: "pending" },
+        meta: { sender: { id: 10, name: "Ahmed" }, assignee: null, inbox: { id: 2, name: "WhatsApp" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/teams/3/team_members") {
+      res.end(JSON.stringify([
+        { id: 8, name: "Operations Offline", availability_status: "offline" }
+      ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
+      res.end(JSON.stringify({
+        payload: [
+          { id: 8, name: "Operations Offline", availability_status: "offline" }
+        ]
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentBodies.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      const body = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: body.custom_attributes }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 505 }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore({ 33: { conversationId: 33, state: "pending" } });
+    const payload = reopenPayload();
+    payload.message.content = "دعم المتدربين";
+    const result = await handleDepartmentRouterWebhook(payload, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.action, "department_team_queue");
+    assert.equal(result.department, "operations");
+    assert.equal(result.toAgentId, null);
+    assert.deepEqual(assignmentBodies, [{ team_id: 3 }]);
+    assert.equal(outgoingMessages.length, 1);
+    assert.match(outgoingMessages[0].content, /الاسم الثلاثي/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook sends the complaint confirmation menu before assigning complaints", async () => {
+  const outgoingMessages = [];
+  let assignmentCalled = false;
+  let customAttributesBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: { engosoft_department_route_state: "pending" },
+        meta: { sender: { id: 10, name: "Ahmed" }, assignee: null, inbox: { id: 2, name: "WhatsApp" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 506 }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentCalled = true;
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore({ 33: { conversationId: 33, state: "pending" } });
+    const payload = reopenPayload();
+    payload.message.content = "3";
+    const result = await handleDepartmentRouterWebhook(payload, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.action, "complaint_intro_sent");
+    assert.equal(assignmentCalled, false);
+    assert.equal(outgoingMessages.length, 1);
+    assert.match(outgoingMessages[0].content, /48/);
+    assert.match(outgoingMessages[0].content, /اضغط 2/);
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department, "complaints");
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "complaint_pending");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook assigns confirmed complaints to the configured owner even when offline", async () => {
+  const assignmentBodies = [];
+  const outgoingMessages = [];
+  let customAttributesBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: {
+          engosoft_department: "complaints",
+          engosoft_department_route_state: "complaint_pending"
+        },
+        meta: { sender: { id: 10, name: "Ahmed" }, assignee: null, inbox: { id: 2, name: "WhatsApp" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/agents") {
+      res.end(JSON.stringify([
+        { id: 12, name: "Abdelrahman Tarek", email: "abdelrahman@example.com", availability_status: "offline" }
+      ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 507 }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentBodies.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore({ 33: { conversationId: 33, state: "complaint_pending" } });
+    const payload = reopenPayload();
+    payload.message.content = "2";
+    const result = await handleDepartmentRouterWebhook(payload, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      complaintAgentName: "Abdelrahman Tarek",
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.action, "complaint_assigned");
+    assert.equal(result.toAgentId, 12);
+    assert.deepEqual(assignmentBodies, [{ team_id: 3 }, { assignee_id: 12 }]);
+    assert.equal(outgoingMessages.length, 2);
+    assert.match(outgoingMessages[0].content, /ملخص الشكوى/);
+    assert.match(outgoingMessages[1].content, /تم إستلام الشكوى/);
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department, "complaints");
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_auto_assigned_agent_id, "12");
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -888,8 +1213,9 @@ test("handleDepartmentRouterWebhook waits for the first incoming message before 
 
     assert.equal(prompted.action, "department_prompt_sent");
     assert.equal(outgoingMessages.length, 1);
-    assert.match(outgoingMessages[0].content, /اكتب 1/);
-    assert.match(outgoingMessages[0].content, /اكتب 2/);
+    assert.match(outgoingMessages[0].content, /اضغط 1/);
+    assert.match(outgoingMessages[0].content, /اضغط 2/);
+    assert.match(outgoingMessages[0].content, /اضغط 3/);
     assert.deepEqual(assignmentBody, { assignee_id: null });
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "pending");
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_prompt_next, false);
@@ -898,7 +1224,7 @@ test("handleDepartmentRouterWebhook waits for the first incoming message before 
   }
 });
 
-test("handleDepartmentRouterWebhook never prompts a contact with previous conversations", async () => {
+test("handleDepartmentRouterWebhook never prompts a contact with previous active conversations", async () => {
   let writeCalls = 0;
   const server = createServer((req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
@@ -919,7 +1245,7 @@ test("handleDepartmentRouterWebhook never prompts a contact with previous conver
     if (url.pathname === "/api/v1/accounts/1/contacts/10/conversations") {
       res.end(JSON.stringify({
         payload: [
-          { id: 12, status: "resolved", inbox_id: 2 },
+          { id: 12, status: "open", inbox_id: 2 },
           { id: 33, status: "open", inbox_id: 2 }
         ]
       }));
@@ -956,10 +1282,99 @@ test("handleDepartmentRouterWebhook never prompts a contact with previous conver
     incoming.message.content = "السلام عليكم";
     const replied = await handleDepartmentRouterWebhook(incoming, options);
 
-    assert.equal(created.reason, "existing_contact_has_history");
+    assert.equal(created.reason, "existing_contact_has_active_history");
     assert.equal(replied.reason, "existing_department_unknown");
     assert.equal(writeCalls, 0);
     assert.equal((await stateStore.get(33)).state, "existing_contact");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook treats resolved-only contact history as a fresh entry", async () => {
+  let customAttributesBody = null;
+  let assignmentBody = null;
+  const outgoingMessages = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        contact_id: 10,
+        custom_attributes: {},
+        meta: { sender: { id: 10, name: "Returning Resolved Contact" }, assignee: { id: 4, name: "Temporary Agent" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10/conversations") {
+      res.end(JSON.stringify({
+        payload: [
+          { id: 12, status: "resolved", inbox_id: 2 },
+          { id: 33, status: "open", inbox_id: 2 }
+        ]
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentBody = await readRequestJson(req);
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 508 }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore();
+    const options = {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    };
+    const created = await handleDepartmentRouterWebhook({
+      event: "conversation_created",
+      id: 33,
+      inbox_id: 2
+    }, options);
+
+    assert.equal(created.action, "new_conversation_registered");
+    assert.equal(created.previousConversationCount, 1);
+    assert.equal(outgoingMessages.length, 0);
+
+    const incoming = reopenPayload();
+    incoming.message.content = "السلام عليكم";
+    const prompted = await handleDepartmentRouterWebhook(incoming, options);
+
+    assert.equal(prompted.action, "department_prompt_sent");
+    assert.equal(outgoingMessages.length, 1);
+    assert.match(outgoingMessages[0].content, /اضغط 1/);
+    assert.deepEqual(assignmentBody, { assignee_id: null });
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "pending");
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -1033,7 +1448,7 @@ test("handleDepartmentRouterWebhook marks resolved conversations to prompt on th
   }
 });
 
-test("handleDepartmentRouterWebhook reroutes a resolved conversation inside its saved department without a menu", async () => {
+test("handleDepartmentRouterWebhook prompts a resolved conversation again on the next reply", async () => {
   let phase = "resolved";
   let customAttributes = {
     engosoft_department: "sales",
@@ -1071,24 +1486,6 @@ test("handleDepartmentRouterWebhook reroutes a resolved conversation inside its 
       return;
     }
 
-    if (url.pathname === "/api/v1/accounts/1/teams/4/team_members") {
-      res.end(JSON.stringify([
-        { id: 7, name: "Online Sales Agent", availability_status: "online" },
-        { id: 9, name: "Old Sales Agent", availability_status: "offline" }
-      ]));
-      return;
-    }
-
-    if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
-      res.end(JSON.stringify({
-        payload: [
-          { id: 7, name: "Online Sales Agent", availability_status: "online" },
-          { id: 9, name: "Old Sales Agent", availability_status: "offline" }
-        ]
-      }));
-      return;
-    }
-
     if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
       assignments.push(await readRequestJson(req));
       res.end(JSON.stringify({ ok: true }));
@@ -1119,7 +1516,7 @@ test("handleDepartmentRouterWebhook reroutes a resolved conversation inside its 
       inboxIds: ["2"],
       salesTeamId: "4",
       operationsTeamId: "3",
-      promptOnResolved: false,
+      promptOnResolved: true,
       stateStore,
       audit: false
     };
@@ -1132,28 +1529,29 @@ test("handleDepartmentRouterWebhook reroutes a resolved conversation inside its 
     }, options);
 
     assert.equal(resolved.action, "marked_for_reentry");
-    assert.equal(customAttributes.engosoft_department_prompt_next, false);
+    assert.equal(customAttributes.engosoft_department_prompt_next, true);
     assert.equal(customAttributes.engosoft_department_auto_assigned_agent_id, null);
     assert.equal(customAttributes.engosoft_department_manual_assignment, false);
 
     phase = "reopened";
     const incoming = reopenPayload();
     incoming.message.content = "question";
-    const rerouted = await handleDepartmentRouterWebhook(incoming, options);
+    const prompted = await handleDepartmentRouterWebhook(incoming, options);
 
-    assert.equal(rerouted.action, "department_assigned");
-    assert.equal(rerouted.reason, "resolved_conversation_reopened");
-    assert.equal(rerouted.department, "sales");
-    assert.equal(rerouted.toAgentId, 7);
-    assert.deepEqual(assignments, [{ team_id: 4, assignee_id: 7 }]);
-    assert.equal(outgoingMessages.length, 0);
+    assert.equal(prompted.action, "department_prompt_sent");
+    assert.equal(prompted.reason, "resolved_conversation_reopened");
+    assert.deepEqual(assignments, [{ assignee_id: null }]);
+    assert.equal(outgoingMessages.length, 1);
+    assert.match(outgoingMessages[0].content, /اضغط 1/);
+    assert.equal(customAttributes.engosoft_department_route_state, "pending");
+    assert.equal(customAttributes.engosoft_department_prompt_next, false);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
 });
 
 test("handleDepartmentRouterWebhook restores automated ownership from Chatwoot after local state is lost", async () => {
-  let assignmentBody = null;
+  const assignmentBodies = [];
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
     res.setHeader("content-type", "application/json; charset=utf-8");
@@ -1197,7 +1595,7 @@ test("handleDepartmentRouterWebhook restores automated ownership from Chatwoot a
     }
 
     if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
-      assignmentBody = await readRequestJson(req);
+      assignmentBodies.push(await readRequestJson(req));
       res.end(JSON.stringify({ ok: true }));
       return;
     }
@@ -1232,7 +1630,7 @@ test("handleDepartmentRouterWebhook restores automated ownership from Chatwoot a
 
     assert.equal(result.action, "department_assigned");
     assert.equal(result.toAgentId, 7);
-    assert.deepEqual(assignmentBody, { team_id: 4, assignee_id: 7 });
+    assert.deepEqual(assignmentBodies, [{ team_id: 4 }, { assignee_id: 7 }]);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }

@@ -51,6 +51,21 @@ Sources:
 - https://developers.chatwoot.com/api-reference/contacts/update-contact
 - https://developers.chatwoot.com/api-reference/contacts/contact-conversations
 
+## Team-aware department routing
+
+- The assignment API can assign a conversation to a team or an agent, but Chatwoot documents that `team_id` is ignored when `assignee_id` is present. The app therefore writes team assignment and agent assignment as two separate calls when both are required.
+- Agent and team-member responses expose `availability_status` as the effective online/busy/offline status. The Department Router uses this for Trainee Support/Operations routing and falls back to the team queue when no eligible online agent exists.
+- Team members can be loaded with `/teams/{team_id}/team_members`; inbox membership is loaded separately and intersected with team members so the app never assigns a conversation to someone outside the current inbox.
+- Conversation details include `status`, `inbox_id`, `meta.assignee`, and `custom_attributes`. The router stores its state in conversation custom attributes so it can resume after redeploys and avoid mistaking its own previous assignment for a manual human takeover.
+- Conversation list supports `assignee_type=unassigned`, `status`, `inbox_id`, and `team_id`, which is enough for a future queue-drainer if Engosoft wants unassigned Operations conversations to be auto-picked when someone later becomes online.
+
+Sources:
+- https://developers.chatwoot.com/api-reference/conversation-assignments/assign-conversation
+- https://developers.chatwoot.com/api-reference/agents/list-agents-in-account
+- https://developers.chatwoot.com/api-reference/teams/list-agents-in-team
+- https://developers.chatwoot.com/api-reference/conversations/conversation-details
+- https://developers.chatwoot.com/api-reference/conversations/conversations-list
+
 ## Reports, audit, campaigns, and webhooks
 
 - Reports API exposes account metrics such as conversations, incoming/outgoing messages, first response time, resolution time, and resolutions.

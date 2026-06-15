@@ -17,6 +17,8 @@ const DEPARTMENT_ATTRIBUTES = {
   manualAssignment: "engosoft_department_manual_assignment"
 };
 const DEFAULT_CAMPAIGN_MARKER_TTL_SECONDS = 30 * 24 * 60 * 60;
+const COMPLAINT_ROUTE_STATE = "complaint_pending";
+const DEFAULT_COMPLAINT_AGENT_NAME = "Abdelrahman Tarek";
 
 export function makeClient(connection) {
   return new ChatwootClient(connection || {});
@@ -530,7 +532,7 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
 
       const customAttributes = await persistDepartmentState(client, conversation, config, {
         [DEPARTMENT_ATTRIBUTES.state]: "resolved",
-        [DEPARTMENT_ATTRIBUTES.promptNext]: config.promptOnResolved,
+        [DEPARTMENT_ATTRIBUTES.promptNext]: true,
         [DEPARTMENT_ATTRIBUTES.autoAssignedAgentId]: null,
         [DEPARTMENT_ATTRIBUTES.manualAssignment]: false
       });
@@ -599,7 +601,7 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
       return promptForDepartment(client, conversation, config, { reason: "customer_requested_change", force: true });
     }
 
-    if (promptNext && config.promptOnResolved) {
+    if ((promptNext || routeState === "resolved") && config.promptOnResolved) {
       return promptForDepartment(client, conversation, config, { reason: "resolved_conversation_reopened", force: true });
     }
 
@@ -650,13 +652,36 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
 
     if (routeState === "pending") {
       if (selection) {
-        return routeConversationToDepartment(client, conversation, config, selection, "customer_selection");
+        return handleDepartmentSelection(client, conversation, config, selection, "customer_selection");
       }
 
       return {
         ok: true,
         handled: true,
         action: "awaiting_department",
+        conversationId,
+        inboxId
+      };
+    }
+
+    if (routeState === COMPLAINT_ROUTE_STATE) {
+      const complaintSelection = parseComplaintSelection(content);
+      if (complaintSelection === "operations") {
+        await sendDepartmentMessage(client, conversationId, config.operationsDataPromptText);
+        return routeConversationToDepartment(client, conversation, config, "operations", "complaint_to_trainee_support", {
+          sendConfirmation: false
+        });
+      }
+      if (complaintSelection === "complaints") {
+        await sendDepartmentMessage(client, conversationId, config.complaintDataPromptText);
+        await sendDepartmentMessage(client, conversationId, config.complaintReceivedText);
+        return routeComplaintToAgent(client, conversation, config, "complaint_confirmed");
+      }
+
+      return {
+        ok: true,
+        handled: true,
+        action: "awaiting_complaint_confirmation",
         conversationId,
         inboxId
       };
@@ -692,7 +717,7 @@ function buildDepartmentRouterConfig(options = {}) {
     salesTeamId: String(options.salesTeamId ?? process.env.DEPARTMENT_ROUTER_SALES_TEAM_ID ?? ""),
     operationsTeamId: String(options.operationsTeamId ?? process.env.DEPARTMENT_ROUTER_OPERATIONS_TEAM_ID ?? ""),
     promptOnNew: parseBooleanOption(options.promptOnNew, process.env.DEPARTMENT_ROUTER_PROMPT_ON_NEW, true),
-    promptOnResolved: parseBooleanOption(options.promptOnResolved, process.env.DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED, false),
+    promptOnResolved: parseBooleanOption(options.promptOnResolved, process.env.DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED, true),
     newContactsOnly: parseBooleanOption(options.newContactsOnly, process.env.DEPARTMENT_ROUTER_NEW_CONTACTS_ONLY, true),
     skipCampaigns: parseBooleanOption(options.skipCampaigns, process.env.DEPARTMENT_ROUTER_SKIP_CAMPAIGNS, true),
     campaignMarkerTtlSeconds: parseCampaignMarkerTtlSeconds(options.campaignMarkerTtlSeconds),
@@ -700,11 +725,23 @@ function buildDepartmentRouterConfig(options = {}) {
     businessHours: buildBusinessHoursConfig(options),
     confirmSelection: parseBooleanOption(options.confirmSelection, process.env.DEPARTMENT_ROUTER_CONFIRM_SELECTION, true),
     promptText: String(options.promptText ?? process.env.DEPARTMENT_ROUTER_PROMPT_TEXT ??
-      "أهلاً بك مع فريق Engosoft.\nللتواصل مع فريق المبيعات اكتب 1.\nللتواصل مع فريق العمليات اكتب 2."),
+      "للمبيعات و العروض الجديدة اضغط 1\nلدعم المتدربين اضغط 2\nللشكاوي اضغط 3"),
     salesConfirmationText: String(options.salesConfirmationText ?? process.env.DEPARTMENT_ROUTER_SALES_CONFIRMATION_TEXT ??
-      "تم تحويل محادثتك إلى فريق المبيعات، وسيتم الرد عليك في أقرب وقت."),
+      "سيتم التواصل معكم سريعا\nنقدر صبرك"),
     operationsConfirmationText: String(options.operationsConfirmationText ?? process.env.DEPARTMENT_ROUTER_OPERATIONS_CONFIRMATION_TEXT ??
       "تم تحويل محادثتك إلى فريق العمليات، وسيتم الرد عليك في أقرب وقت."),
+    operationsDataPromptText: String(options.operationsDataPromptText ?? process.env.DEPARTMENT_ROUTER_OPERATIONS_DATA_PROMPT_TEXT ??
+      "لتتمكن من مساعدتكم سريعا يرجى تزويدنا بالبيانات التالية\n1. الاسم الثلاثي\n2. رقم الهاتف الذي تم التسجيل به\n3. الدورة التي تم حجزها"),
+    complaintIntroText: String(options.complaintIntroText ?? process.env.DEPARTMENT_ROUTER_COMPLAINT_INTRO_TEXT ??
+      "يرجى العلم أن هذا الاختيار يتعلق بالشكاوي فقط و سيتم الرد عليكم من 48 إلى 72 ساعة عمل\nو في حالة إن أردتم حل مشكلة متعلقة بالدورة يرجى اختيار دعم المتدربين و ذلك للرد الفوري\nلدعم المتدربين اضغط 1\nلتأكيد اختيار قسم الشكاوي اضغط 2"),
+    complaintDataPromptText: String(options.complaintDataPromptText ?? process.env.DEPARTMENT_ROUTER_COMPLAINT_DATA_PROMPT_TEXT ??
+      "يرجى تزويدنا بالبيانات التالية\n1. الاسم الثلاثي\n2. رقم الهاتف الذي تم التسجيل به\n3. الدورة التي تم حجزها\n4. ملخص الشكوى"),
+    complaintReceivedText: String(options.complaintReceivedText ?? process.env.DEPARTMENT_ROUTER_COMPLAINT_RECEIVED_TEXT ??
+      "تم إستلام الشكوى و سيتم الرد عليكم من 48 إلى 72 ساعة عمل"),
+    salesAssignmentMode: String(options.salesAssignmentMode ?? process.env.DEPARTMENT_ROUTER_SALES_ASSIGNMENT_MODE ?? "any_status").toLowerCase(),
+    complaintAgentId: String(options.complaintAgentId ?? process.env.DEPARTMENT_ROUTER_COMPLAINT_AGENT_ID ?? "").trim(),
+    complaintAgentEmail: String(options.complaintAgentEmail ?? process.env.DEPARTMENT_ROUTER_COMPLAINT_AGENT_EMAIL ?? "").trim().toLowerCase(),
+    complaintAgentName: String(options.complaintAgentName ?? process.env.DEPARTMENT_ROUTER_COMPLAINT_AGENT_NAME ?? DEFAULT_COMPLAINT_AGENT_NAME).trim(),
     stateStore: options.stateStore || {
       get: getDepartmentRoute,
       save: saveDepartmentRoute
@@ -807,21 +844,23 @@ async function registerNewConversationForDepartmentPrompt(client, conversation, 
     };
   }
 
-  if (config.newContactsOnly && history.previousConversationCount > 0) {
+  if (config.newContactsOnly && history.activeConversationCount > 0) {
     await config.stateStore.save(conversationId, {
       inboxId,
       state: "existing_contact",
       contactId: history.contactId,
-      previousConversationCount: history.previousConversationCount
+      previousConversationCount: history.previousConversationCount,
+      activeConversationCount: history.activeConversationCount
     });
     return {
       ok: true,
       handled: true,
       skipped: true,
-      reason: "existing_contact_has_history",
+      reason: "existing_contact_has_active_history",
       conversationId,
       inboxId,
-      previousConversationCount: history.previousConversationCount
+      previousConversationCount: history.previousConversationCount,
+      activeConversationCount: history.activeConversationCount
     };
   }
 
@@ -829,7 +868,8 @@ async function registerNewConversationForDepartmentPrompt(client, conversation, 
     inboxId,
     state: "new_waiting_incoming",
     contactId: history.contactId,
-    previousConversationCount: history.previousConversationCount
+    previousConversationCount: history.previousConversationCount,
+    activeConversationCount: history.activeConversationCount
   });
   return {
     ok: true,
@@ -844,17 +884,19 @@ async function registerNewConversationForDepartmentPrompt(client, conversation, 
 async function inspectContactConversationHistory(client, conversation) {
   const contactId = getConversationContactId(conversation);
   if (!contactId) {
-    return { canVerify: false, reason: "contact_id_unavailable", contactId: null, previousConversationCount: 0 };
+    return { canVerify: false, reason: "contact_id_unavailable", contactId: null, previousConversationCount: 0, activeConversationCount: 0 };
   }
 
   try {
     const response = await client.contactConversations(contactId);
     const previousConversations = getPayload(response).filter(item => String(item.id) !== String(conversation.id));
+    const activeConversations = previousConversations.filter(item => String(item.status || "").toLowerCase() !== "resolved");
     return {
       canVerify: true,
       reason: "",
       contactId,
-      previousConversationCount: previousConversations.length
+      previousConversationCount: previousConversations.length,
+      activeConversationCount: activeConversations.length
     };
   } catch (error) {
     return {
@@ -862,6 +904,7 @@ async function inspectContactConversationHistory(client, conversation) {
       reason: "contact_history_unavailable",
       contactId,
       previousConversationCount: 0,
+      activeConversationCount: 0,
       error: error.message
     };
   }
@@ -1041,13 +1084,76 @@ async function promptForDepartment(client, conversation, config, { reason, force
   };
 }
 
+async function handleDepartmentSelection(client, conversation, config, selection, reason) {
+  const conversationId = conversation.id;
+  if (selection === "sales") {
+    await sendDepartmentMessage(client, conversationId, config.salesConfirmationText);
+    return routeConversationToDepartment(client, conversation, config, "sales", reason, {
+      agentMode: config.salesAssignmentMode === "online" ? "online" : "any_status",
+      sendConfirmation: false
+    });
+  }
+
+  if (selection === "operations") {
+    await sendDepartmentMessage(client, conversationId, config.operationsDataPromptText);
+    return routeConversationToDepartment(client, conversation, config, "operations", reason, {
+      sendConfirmation: false
+    });
+  }
+
+  if (selection === "complaints") {
+    await sendDepartmentMessage(client, conversationId, config.complaintIntroText);
+    const updatedAttributes = await persistDepartmentState(client, conversation, config, {
+      [DEPARTMENT_ATTRIBUTES.department]: "complaints",
+      [DEPARTMENT_ATTRIBUTES.state]: COMPLAINT_ROUTE_STATE,
+      [DEPARTMENT_ATTRIBUTES.promptNext]: false,
+      [DEPARTMENT_ATTRIBUTES.autoAssignedAgentId]: null,
+      [DEPARTMENT_ATTRIBUTES.manualAssignment]: false
+    });
+    await auditDepartmentRouter("department_router_complaint_intro_sent", {
+      conversationId,
+      inboxId: getConversationInboxId(conversation),
+      reason,
+      updatedAttributes
+    }, config.audit);
+    return {
+      ok: true,
+      handled: true,
+      action: "complaint_intro_sent",
+      conversationId,
+      inboxId: getConversationInboxId(conversation),
+      reason
+    };
+  }
+
+  return {
+    ok: true,
+    handled: true,
+    skipped: true,
+    reason: "unknown_department_selection",
+    conversationId,
+    inboxId: getConversationInboxId(conversation)
+  };
+}
+
+async function sendDepartmentMessage(client, conversationId, content) {
+  if (!content) return null;
+  return client.createMessage(conversationId, {
+    content,
+    message_type: "outgoing",
+    private: false,
+    content_type: "text",
+    content_attributes: {}
+  });
+}
+
 async function routeConversationToDepartment(
   client,
   conversation,
   config,
   department,
   reason,
-  { allowReassignment = false } = {}
+  { allowReassignment = false, agentMode = "online", sendConfirmation = true } = {}
 ) {
   const conversationId = conversation.id;
   const inboxId = getConversationInboxId(conversation);
@@ -1097,9 +1203,11 @@ async function routeConversationToDepartment(
   // Decide whether to assign a specific agent. When business hours are enabled,
   // assign an online agent inside business hours and fall back to team-only
   // (Unassigned) outside business hours. Otherwise use the static flag.
-  const assignAgentNow = config.businessHours?.enabled
-    ? isWithinBusinessHours(config.businessHours)
-    : config.assignAgent;
+  const assignAgentNow = agentMode === "any_status"
+    ? true
+    : config.businessHours?.enabled
+      ? isWithinBusinessHours(config.businessHours)
+      : config.assignAgent;
 
   // Team-only mode: route to the correct team and leave the conversation
   // Unassigned so the team's agents pick it up themselves. Never auto-assign a
@@ -1160,17 +1268,22 @@ async function routeConversationToDepartment(
   let assignmentResult = null;
 
   if (!currentIsEligibleOnline) {
+    const candidatePool = agentMode === "any_status"
+      ? eligibleAgents
+      : eligibleAgents.filter(agent => getAgentAvailability(agent) === "online");
     const onlineAgents = orderReopenRouterCandidates(
-      eligibleAgents.filter(agent => getAgentAvailability(agent) === "online"),
+      candidatePool,
       conversationId
     );
     targetAgent = onlineAgents.find(agent => String(getAgentId(agent)) !== String(currentAssigneeId)) || onlineAgents[0] || null;
-    const assignmentPayload = {
-      team_id: Number(teamId),
-      assignee_id: targetAgent ? Number(getAgentId(targetAgent)) : null
-    };
-    assignmentResult = await client.assignConversation(conversationId, assignmentPayload);
-    action = targetAgent ? "department_assigned" : "department_team_queue";
+    if (targetAgent) {
+      assignmentResult = await assignConversationToTeamAndAgent(client, conversationId, teamId, getAgentId(targetAgent));
+      action = agentMode === "any_status" ? "department_assigned_any_status" : "department_assigned";
+    } else {
+      assignmentResult = await client.assignConversation(conversationId, { team_id: Number(teamId) });
+      if (currentAssigneeId) await client.assignConversation(conversationId, { assignee_id: null });
+      action = "department_team_queue";
+    }
   }
 
   const updatedAttributes = await persistDepartmentState(client, conversation, config, {
@@ -1183,14 +1296,12 @@ async function routeConversationToDepartment(
     [DEPARTMENT_ATTRIBUTES.manualAssignment]: false
   });
 
-  if (config.confirmSelection && reason === "customer_selection") {
-    await client.createMessage(conversationId, {
-      content: department === "sales" ? config.salesConfirmationText : config.operationsConfirmationText,
-      message_type: "outgoing",
-      private: false,
-      content_type: "text",
-      content_attributes: {}
-    });
+  if (sendConfirmation && config.confirmSelection && reason === "customer_selection") {
+    await sendDepartmentMessage(
+      client,
+      conversationId,
+      department === "sales" ? config.salesConfirmationText : config.operationsConfirmationText
+    );
   }
 
   const details = {
@@ -1213,6 +1324,69 @@ async function routeConversationToDepartment(
     ...details,
     result: assignmentResult
   };
+}
+
+async function routeComplaintToAgent(client, conversation, config, reason) {
+  const conversationId = conversation.id;
+  const inboxId = getConversationInboxId(conversation);
+  const teamId = config.operationsTeamId;
+  if (!teamId) throw new Error("Missing operations team id for complaint router.");
+
+  const targetAgent = await resolveComplaintAgent(client, config);
+  const currentAssigneeId = getConversationAssigneeId(conversation);
+
+  let assignmentResult = null;
+  let action = "complaint_team_queue";
+  if (targetAgent) {
+    assignmentResult = await assignConversationToTeamAndAgent(client, conversationId, teamId, getAgentId(targetAgent));
+    action = "complaint_assigned";
+  } else {
+    assignmentResult = await client.assignConversation(conversationId, { team_id: Number(teamId) });
+    if (currentAssigneeId) await client.assignConversation(conversationId, { assignee_id: null });
+  }
+
+  const updatedAttributes = await persistDepartmentState(client, conversation, config, {
+    [DEPARTMENT_ATTRIBUTES.department]: "complaints",
+    [DEPARTMENT_ATTRIBUTES.state]: "routed",
+    [DEPARTMENT_ATTRIBUTES.teamId]: Number(teamId),
+    [DEPARTMENT_ATTRIBUTES.promptNext]: false,
+    [DEPARTMENT_ATTRIBUTES.routedAt]: new Date().toISOString(),
+    [DEPARTMENT_ATTRIBUTES.autoAssignedAgentId]: targetAgent ? String(getAgentId(targetAgent)) : null,
+    [DEPARTMENT_ATTRIBUTES.manualAssignment]: false
+  });
+
+  const details = {
+    conversationId,
+    inboxId,
+    department: "complaints",
+    teamId: Number(teamId),
+    fromAgentId: currentAssigneeId || null,
+    toAgentId: targetAgent ? Number(getAgentId(targetAgent)) : null,
+    toAgentName: getAgentName(targetAgent),
+    reason,
+    updatedAttributes
+  };
+  await auditDepartmentRouter(`department_router_${action}`, details, config.audit);
+  return { ok: true, handled: true, action, ...details, result: assignmentResult };
+}
+
+async function resolveComplaintAgent(client, config) {
+  if (config.complaintAgentId) return { id: Number(config.complaintAgentId), name: config.complaintAgentName };
+
+  const agents = normalizeRows(await client.listAgents());
+  if (config.complaintAgentEmail) {
+    const byEmail = agents.find(agent => String(agent.email || "").toLowerCase() === config.complaintAgentEmail);
+    if (byEmail) return byEmail;
+  }
+
+  const targetName = normalizeDepartmentText(config.complaintAgentName);
+  return agents.find(agent => normalizeDepartmentText(getAgentName(agent)) === targetName) || null;
+}
+
+async function assignConversationToTeamAndAgent(client, conversationId, teamId, agentId) {
+  const teamResult = await client.assignConversation(conversationId, { team_id: Number(teamId) });
+  const agentResult = await client.assignConversation(conversationId, { assignee_id: Number(agentId) });
+  return { team: teamResult, assignee: agentResult };
 }
 
 async function updateDepartmentAttributes(client, conversation, changes) {
@@ -1329,13 +1503,24 @@ export function parseDepartmentSelection(content) {
   const normalized = normalizeDepartmentText(content);
   if (["1", "01"].includes(normalized)) return "sales";
   if (["2", "02"].includes(normalized)) return "operations";
+  if (["3", "03"].includes(normalized)) return "complaints";
 
   if (["sales", "sale", "sales team", "مبيعات", "المبيعات", "سيلز", "ريسيل", "ري سيل"].includes(normalized)) {
     return "sales";
   }
-  if (["operations", "operation", "ops", "operations team", "عمليات", "العمليات", "اوبريشن", "أوبريشن", "تشغيل"].includes(normalized)) {
+  if (["operations", "operation", "ops", "operations team", "دعم المتدربين", "متدربين", "عمليات", "العمليات", "اوبريشن", "أوبريشن", "تشغيل"].includes(normalized)) {
     return "operations";
   }
+  if (["complaint", "complaints", "complaints team", "شكوى", "الشكاوي", "شكاوي", "الشكاوى", "الشكاوى"].includes(normalized)) {
+    return "complaints";
+  }
+  return null;
+}
+
+function parseComplaintSelection(content) {
+  const normalized = normalizeDepartmentText(content);
+  if (["1", "01", "دعم المتدربين", "متدربين"].includes(normalized)) return "operations";
+  if (["2", "02", "شكوى", "الشكاوي", "شكاوي", "الشكاوى"].includes(normalized)) return "complaints";
   return null;
 }
 
