@@ -12,8 +12,11 @@ const DEPARTMENT_ATTRIBUTES = {
   teamId: "engosoft_department_team_id",
   promptNext: "engosoft_department_prompt_next",
   promptedAt: "engosoft_department_prompted_at",
-  routedAt: "engosoft_department_routed_at"
+  routedAt: "engosoft_department_routed_at",
+  autoAssignedAgentId: "engosoft_department_auto_assigned_agent_id",
+  manualAssignment: "engosoft_department_manual_assignment"
 };
+const DEFAULT_CAMPAIGN_MARKER_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 export function makeClient(connection) {
   return new ChatwootClient(connection || {});
@@ -480,19 +483,22 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
     let localRoute = await config.stateStore.get(conversationId);
 
     if (config.skipCampaigns) {
-      const alreadyBroadcast = String(localRoute?.state || "").toLowerCase() === "broadcast";
-      const campaignId = getConversationCampaignMarker(conversation);
-      if (alreadyBroadcast || campaignId) {
-        if (!alreadyBroadcast) {
+      const campaign = getConversationCampaignMarker(conversation, config.campaignMarkerTtlSeconds);
+      const hasConversationCampaignMetadata = hasExternalCampaignMetadata(conversation);
+      const localCampaign = hasConversationCampaignMetadata ? null : getLocalCampaignMarker(localRoute);
+      if (localCampaign || campaign) {
+        if (!localCampaign) {
           localRoute = await config.stateStore.save(conversationId, {
             inboxId,
             state: "broadcast",
-            campaignId: campaignId || null
+            campaignId: campaign?.id || null,
+            campaignExpiresAt: campaign?.expiresAt || null
           });
           await auditDepartmentRouter("department_router_broadcast_skipped", {
             conversationId,
             inboxId,
-            campaignId: campaignId || null,
+            campaignId: campaign?.id || null,
+            campaignExpiresAt: campaign?.expiresAt || null,
             event: eventName
           }, config.audit);
         }
@@ -503,26 +509,31 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
           reason: "broadcast_conversation",
           conversationId,
           inboxId,
-          campaignId: campaignId || localRoute?.campaignId || null
+          campaignId: campaign?.id || localCampaign?.id || null,
+          campaignExpiresAt: campaign?.expiresAt || localCampaign?.expiresAt || null
         };
+      }
+      if (String(localRoute?.state || "").toLowerCase() === "broadcast") {
+        localRoute = await config.stateStore.save(conversationId, {
+          state: "campaign_expired",
+          campaignId: null,
+          campaignExpiresAt: null
+        });
       }
     }
 
     if (eventName.includes("conversation_status_changed")) {
       const status = getWebhookConversationStatus(payload, conversation);
-      if (status !== "resolved" || !config.promptOnResolved) {
+      if (status !== "resolved") {
         return { ok: true, handled: false, skipped: true, reason: "department_status_ignored", conversationId, inboxId, status };
       }
 
       const customAttributes = await persistDepartmentState(client, conversation, config, {
         [DEPARTMENT_ATTRIBUTES.state]: "resolved",
-        [DEPARTMENT_ATTRIBUTES.promptNext]: true
+        [DEPARTMENT_ATTRIBUTES.promptNext]: config.promptOnResolved,
+        [DEPARTMENT_ATTRIBUTES.autoAssignedAgentId]: null,
+        [DEPARTMENT_ATTRIBUTES.manualAssignment]: false
       });
-      // Resolving ends the agent's ownership. Release the manual-assignment lock
-      // so that when the customer reopens, the conversation is routed again to
-      // the bot menu and an online agent instead of sticking to the agent who
-      // resolved it (who is often offline by then).
-      await config.stateStore.save(conversationId, { manualAssignment: false, autoAssignedAgentId: null });
       await auditDepartmentRouter("department_router_marked_for_reentry", {
         conversationId,
         inboxId,
@@ -592,14 +603,26 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
       return promptForDepartment(client, conversation, config, { reason: "resolved_conversation_reopened", force: true });
     }
 
+    const knownDepartment = getKnownConversationDepartment(conversation, config, localRoute);
+    if (routeState === "resolved" && knownDepartment) {
+      return routeConversationToDepartment(
+        client,
+        conversation,
+        config,
+        knownDepartment,
+        "resolved_conversation_reopened",
+        { allowReassignment: true }
+      );
+    }
+
     // Leave the conversation alone if a human agent is actively handling it.
     // The router only manages an assignment it made itself; any other current
     // assignee is treated as a manual takeover (for example an agent who
     // self-assigned a campaign conversation) and must not be prompted,
     // unassigned, or rerouted. Resolving clears this lock (handled above).
     const handlerAssigneeId = getConversationAssigneeId(conversation);
-    const handlerAutoAssignedAgentId = localRoute?.autoAssignedAgentId != null ? String(localRoute.autoAssignedAgentId) : null;
-    const humanAssigned = localRoute?.manualAssignment === true ||
+    const handlerAutoAssignedAgentId = getSavedAutoAssignedAgentId(conversation, localRoute);
+    const humanAssigned = getSavedManualAssignment(conversation, localRoute) ||
       (Boolean(handlerAssigneeId) && String(handlerAssigneeId) !== (handlerAutoAssignedAgentId || ""));
     // Exempt the new-contact first-message flow: that path intentionally clears
     // a temporary auto-assignment before prompting. Campaign conversations are
@@ -639,7 +662,6 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
       };
     }
 
-    const knownDepartment = getKnownConversationDepartment(conversation, config, localRoute);
     if (knownDepartment) {
       return routeConversationToDepartment(client, conversation, config, knownDepartment, "existing_department");
     }
@@ -654,7 +676,7 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
 
     return {
       ok: true,
-      handled: true,
+      handled: false,
       skipped: true,
       reason: "existing_department_unknown",
       conversationId,
@@ -673,6 +695,7 @@ function buildDepartmentRouterConfig(options = {}) {
     promptOnResolved: parseBooleanOption(options.promptOnResolved, process.env.DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED, false),
     newContactsOnly: parseBooleanOption(options.newContactsOnly, process.env.DEPARTMENT_ROUTER_NEW_CONTACTS_ONLY, true),
     skipCampaigns: parseBooleanOption(options.skipCampaigns, process.env.DEPARTMENT_ROUTER_SKIP_CAMPAIGNS, true),
+    campaignMarkerTtlSeconds: parseCampaignMarkerTtlSeconds(options.campaignMarkerTtlSeconds),
     assignAgent: parseBooleanOption(options.assignAgent, process.env.DEPARTMENT_ROUTER_ASSIGN_AGENT, true),
     businessHours: buildBusinessHoursConfig(options),
     confirmSelection: parseBooleanOption(options.confirmSelection, process.env.DEPARTMENT_ROUTER_CONFIRM_SELECTION, true),
@@ -876,9 +899,9 @@ const CAMPAIGN_MARKER_KEYS = [
   "last_api_template"
 ];
 
-function getConversationCampaignMarker(conversation) {
+function getConversationCampaignMarker(conversation, ttlSeconds = DEFAULT_CAMPAIGN_MARKER_TTL_SECONDS) {
   const nativeId = getConversationCampaignId(conversation);
-  if (nativeId) return String(nativeId);
+  if (nativeId) return { id: String(nativeId), expiresAt: null, source: "native" };
 
   // The external campaign uploader writes these markers to the conversation's
   // custom_attributes (and occasionally additional_attributes). Scan both.
@@ -887,13 +910,78 @@ function getConversationCampaignMarker(conversation) {
     conversation?.additional_attributes || conversation?.additionalAttributes || {}
   ];
   for (const source of sources) {
+    const activeUntil = parseDateValue(source.api_campaign_active_until);
+    if (activeUntil) {
+      if (activeUntil.getTime() <= Date.now()) return null;
+      return {
+        id: String(source.api_campaign_label || source.last_api_campaign_label || "external_campaign"),
+        expiresAt: activeUntil.toISOString(),
+        source: "external"
+      };
+    }
+
+    const datedMarkers = [
+      source.api_campaign_marked_at,
+      source.api_campaign_created_at,
+      ...Object.entries(source)
+        .filter(([key]) => key.startsWith("api_sent_"))
+        .map(([, value]) => value)
+    ].map(parseDateValue).filter(Boolean);
+    const latestMarker = datedMarkers.sort((left, right) => right.getTime() - left.getTime())[0] || null;
+    if (latestMarker) {
+      if (ttlSeconds <= 0) continue;
+      const expiresAt = new Date(latestMarker.getTime() + ttlSeconds * 1000);
+      if (expiresAt.getTime() <= Date.now()) continue;
+      return {
+        id: String(source.api_campaign_label || source.last_api_campaign_label || "external_campaign"),
+        expiresAt: expiresAt.toISOString(),
+        source: "external_legacy"
+      };
+    }
+
     for (const key of CAMPAIGN_MARKER_KEYS) {
-      if (source[key]) return String(source[key]);
+      if (source[key]) {
+        return { id: String(source[key]), expiresAt: null, source: "external_legacy" };
+      }
     }
     const sentKey = Object.keys(source).find(key => key.startsWith("api_sent_"));
-    if (sentKey) return sentKey;
+    if (sentKey) return { id: sentKey, expiresAt: null, source: "external_legacy" };
   }
   return null;
+}
+
+function hasExternalCampaignMetadata(conversation) {
+  const sources = [
+    getConversationCustomAttributes(conversation),
+    conversation?.additional_attributes || conversation?.additionalAttributes || {}
+  ];
+  return sources.some(source =>
+    Boolean(source.api_campaign_active_until) ||
+    CAMPAIGN_MARKER_KEYS.some(key => Boolean(source[key])) ||
+    Object.keys(source).some(key => key.startsWith("api_sent_"))
+  );
+}
+
+function getLocalCampaignMarker(localRoute) {
+  if (String(localRoute?.state || "").toLowerCase() !== "broadcast") return null;
+  const expiresAt = parseDateValue(localRoute?.campaignExpiresAt);
+  if (expiresAt && expiresAt.getTime() <= Date.now()) return null;
+  return {
+    id: localRoute?.campaignId || "local_campaign",
+    expiresAt: expiresAt?.toISOString() || null
+  };
+}
+
+function parseCampaignMarkerTtlSeconds(optionValue) {
+  const value = Number(optionValue ?? process.env.CAMPAIGN_MARKER_TTL_SECONDS ?? DEFAULT_CAMPAIGN_MARKER_TTL_SECONDS);
+  if (!Number.isFinite(value)) return DEFAULT_CAMPAIGN_MARKER_TTL_SECONDS;
+  return Math.max(0, Math.floor(value));
+}
+
+function parseDateValue(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 async function promptForDepartment(client, conversation, config, { reason, force = false } = {}) {
@@ -932,7 +1020,9 @@ async function promptForDepartment(client, conversation, config, { reason, force
   const updatedAttributes = await persistDepartmentState(client, conversation, config, {
     [DEPARTMENT_ATTRIBUTES.state]: "pending",
     [DEPARTMENT_ATTRIBUTES.promptNext]: false,
-    [DEPARTMENT_ATTRIBUTES.promptedAt]: new Date().toISOString()
+    [DEPARTMENT_ATTRIBUTES.promptedAt]: new Date().toISOString(),
+    [DEPARTMENT_ATTRIBUTES.autoAssignedAgentId]: null,
+    [DEPARTMENT_ATTRIBUTES.manualAssignment]: false
   });
   await auditDepartmentRouter("department_router_prompted", {
     conversationId,
@@ -951,7 +1041,14 @@ async function promptForDepartment(client, conversation, config, { reason, force
   };
 }
 
-async function routeConversationToDepartment(client, conversation, config, department, reason) {
+async function routeConversationToDepartment(
+  client,
+  conversation,
+  config,
+  department,
+  reason,
+  { allowReassignment = false } = {}
+) {
   const conversationId = conversation.id;
   const inboxId = getConversationInboxId(conversation);
   const teamId = department === "sales" ? config.salesTeamId : config.operationsTeamId;
@@ -961,13 +1058,15 @@ async function routeConversationToDepartment(client, conversation, config, depar
 
   const localRoute = await config.stateStore.get(conversationId);
   const currentAssigneeId = getConversationAssigneeId(conversation);
-  const autoAssignedAgentId = localRoute?.autoAssignedAgentId != null ? String(localRoute.autoAssignedAgentId) : null;
+  const autoAssignedAgentId = getSavedAutoAssignedAgentId(conversation, localRoute);
 
   // Respect manual assignments. A human moved this conversation if it currently
   // has an assignee that the router did not assign itself. Once locked, the
   // router never reassigns it again, even when that agent is offline.
-  const manuallyLocked = localRoute?.manualAssignment === true ||
-    (Boolean(currentAssigneeId) && String(currentAssigneeId) !== (autoAssignedAgentId || ""));
+  const manuallyLocked = !allowReassignment && (
+    getSavedManualAssignment(conversation, localRoute) ||
+    (Boolean(currentAssigneeId) && String(currentAssigneeId) !== (autoAssignedAgentId || ""))
+  );
 
   if (manuallyLocked) {
     const updatedAttributes = await persistDepartmentState(client, conversation, config, {
@@ -975,9 +1074,10 @@ async function routeConversationToDepartment(client, conversation, config, depar
       [DEPARTMENT_ATTRIBUTES.state]: "routed",
       [DEPARTMENT_ATTRIBUTES.teamId]: Number(teamId),
       [DEPARTMENT_ATTRIBUTES.promptNext]: false,
-      [DEPARTMENT_ATTRIBUTES.routedAt]: new Date().toISOString()
+      [DEPARTMENT_ATTRIBUTES.routedAt]: new Date().toISOString(),
+      [DEPARTMENT_ATTRIBUTES.autoAssignedAgentId]: null,
+      [DEPARTMENT_ATTRIBUTES.manualAssignment]: true
     });
-    await config.stateStore.save(conversationId, { manualAssignment: true });
     const details = {
       conversationId,
       inboxId,
@@ -1015,9 +1115,10 @@ async function routeConversationToDepartment(client, conversation, config, depar
       [DEPARTMENT_ATTRIBUTES.state]: "routed",
       [DEPARTMENT_ATTRIBUTES.teamId]: Number(teamId),
       [DEPARTMENT_ATTRIBUTES.promptNext]: false,
-      [DEPARTMENT_ATTRIBUTES.routedAt]: new Date().toISOString()
+      [DEPARTMENT_ATTRIBUTES.routedAt]: new Date().toISOString(),
+      [DEPARTMENT_ATTRIBUTES.autoAssignedAgentId]: null,
+      [DEPARTMENT_ATTRIBUTES.manualAssignment]: false
     });
-    await config.stateStore.save(conversationId, { autoAssignedAgentId: null, manualAssignment: false });
 
     if (config.confirmSelection && reason === "customer_selection") {
       await client.createMessage(conversationId, {
@@ -1077,11 +1178,9 @@ async function routeConversationToDepartment(client, conversation, config, depar
     [DEPARTMENT_ATTRIBUTES.state]: "routed",
     [DEPARTMENT_ATTRIBUTES.teamId]: Number(teamId),
     [DEPARTMENT_ATTRIBUTES.promptNext]: false,
-    [DEPARTMENT_ATTRIBUTES.routedAt]: new Date().toISOString()
-  });
-  await config.stateStore.save(conversationId, {
-    autoAssignedAgentId: targetAgent ? String(getAgentId(targetAgent)) : null,
-    manualAssignment: false
+    [DEPARTMENT_ATTRIBUTES.routedAt]: new Date().toISOString(),
+    [DEPARTMENT_ATTRIBUTES.autoAssignedAgentId]: targetAgent ? String(getAgentId(targetAgent)) : null,
+    [DEPARTMENT_ATTRIBUTES.manualAssignment]: false
   });
 
   if (config.confirmSelection && reason === "customer_selection") {
@@ -1158,6 +1257,12 @@ function departmentAttributeChangesToLocalState(changes) {
   if (DEPARTMENT_ATTRIBUTES.promptNext in changes) local.promptNext = changes[DEPARTMENT_ATTRIBUTES.promptNext];
   if (DEPARTMENT_ATTRIBUTES.promptedAt in changes) local.promptedAt = changes[DEPARTMENT_ATTRIBUTES.promptedAt];
   if (DEPARTMENT_ATTRIBUTES.routedAt in changes) local.routedAt = changes[DEPARTMENT_ATTRIBUTES.routedAt];
+  if (DEPARTMENT_ATTRIBUTES.autoAssignedAgentId in changes) {
+    local.autoAssignedAgentId = changes[DEPARTMENT_ATTRIBUTES.autoAssignedAgentId];
+  }
+  if (DEPARTMENT_ATTRIBUTES.manualAssignment in changes) {
+    local.manualAssignment = changes[DEPARTMENT_ATTRIBUTES.manualAssignment];
+  }
   return local;
 }
 
@@ -1167,6 +1272,33 @@ function getConversationCustomAttributes(conversation) {
 
 function getConversationTeamId(conversation) {
   return conversation?.team_id || conversation?.team?.id || conversation?.meta?.team?.id || null;
+}
+
+function getSavedAutoAssignedAgentId(conversation, localRoute = null) {
+  const customAttributes = getConversationCustomAttributes(conversation);
+  const hasPersistedValue = Object.prototype.hasOwnProperty.call(
+    customAttributes,
+    DEPARTMENT_ATTRIBUTES.autoAssignedAgentId
+  );
+  const value = hasPersistedValue
+    ? customAttributes[DEPARTMENT_ATTRIBUTES.autoAssignedAgentId]
+    : localRoute?.autoAssignedAgentId;
+  return value == null || value === "" ? null : String(value);
+}
+
+function getSavedManualAssignment(conversation, localRoute = null) {
+  const customAttributes = getConversationCustomAttributes(conversation);
+  const hasPersistedValue = Object.prototype.hasOwnProperty.call(
+    customAttributes,
+    DEPARTMENT_ATTRIBUTES.manualAssignment
+  );
+  return parseBooleanOption(
+    hasPersistedValue
+      ? customAttributes[DEPARTMENT_ATTRIBUTES.manualAssignment]
+      : localRoute?.manualAssignment,
+    undefined,
+    false
+  );
 }
 
 function getWebhookConversationStatus(payload, conversation) {
@@ -1284,10 +1416,18 @@ export async function handleReopenRouterWebhook(payload = {}, options = {}) {
   }
 
   if (config.skipCampaigns) {
-    const campaignId = getConversationCampaignMarker(conversation) ||
-      getConversationCampaignMarker(getWebhookConversation(payload, message));
-    if (campaignId) {
-      return { ok: true, skipped: true, reason: "broadcast_conversation", conversationId, inboxId, campaignId };
+    const campaign = getConversationCampaignMarker(conversation, config.campaignMarkerTtlSeconds) ||
+      getConversationCampaignMarker(getWebhookConversation(payload, message), config.campaignMarkerTtlSeconds);
+    if (campaign) {
+      return {
+        ok: true,
+        skipped: true,
+        reason: "broadcast_conversation",
+        conversationId,
+        inboxId,
+        campaignId: campaign.id,
+        campaignExpiresAt: campaign.expiresAt
+      };
     }
   }
 
@@ -1405,6 +1545,7 @@ function buildReopenRouterConfig(options = {}) {
       true
     ),
     skipCampaigns: parseBooleanOption(options.skipCampaigns, process.env.REOPEN_ROUTER_SKIP_CAMPAIGNS, true),
+    campaignMarkerTtlSeconds: parseCampaignMarkerTtlSeconds(options.campaignMarkerTtlSeconds),
     audit: options.audit !== false
   };
 }
@@ -1434,10 +1575,6 @@ function noCandidateReason(config, targetAgents, inboxId) {
 
 async function loadWebhookConversation(client, payload, message, conversationId) {
   const conversation = getWebhookConversation(payload, message);
-  if (conversation && getConversationAssigneeId(conversation) && getConversationInboxId(conversation)) {
-    return conversation;
-  }
-
   try {
     const response = await client.conversationDetails(conversationId);
     return unwrapConversationResponse(response) || conversation || {};

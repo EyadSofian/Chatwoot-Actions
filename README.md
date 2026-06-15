@@ -134,6 +134,7 @@ DEPARTMENT_ROUTER_NEW_CONTACTS_ONLY=true
 DEPARTMENT_ROUTER_CONFIRM_SELECTION=true
 DEPARTMENT_ROUTER_SKIP_CAMPAIGNS=true
 DEPARTMENT_ROUTER_ASSIGN_AGENT=false
+CAMPAIGN_MARKER_TTL_SECONDS=2592000
 ```
 
 `DEPARTMENT_ROUTER_ASSIGN_AGENT=false` makes the router send the menu and, after the customer picks `1` or `2`, assign the conversation to the chosen team **without** assigning a specific agent. The conversation stays Unassigned so the team's agents pick it up themselves. The Chatwoot assignments endpoint ignores `team_id` when `assignee_id` is present, so the router sets the team and clears the assignee in two separate calls. With the default `true`, the router instead assigns an online member of the team and inbox.
@@ -171,16 +172,16 @@ Behavior:
 
 - New conversation: register it without sending anything. Send the menu once only after the first incoming customer message opens the WhatsApp service window.
 - Existing contact with any previous Chatwoot conversation: never send the department menu.
-- Broadcast/campaign conversation: never send the menu and never reassign it, even when the customer later replies and even if the current agent is offline. A conversation counts as a broadcast when it carries a native Chatwoot `campaign_id`, or when it was opened/touched by the external campaign uploader, which marks the conversation with custom attributes (`api_campaign_label`, `last_api_campaign_label`, or any `api_sent_*` key). Set `DEPARTMENT_ROUTER_SKIP_CAMPAIGNS=false` only if you want broadcasts to flow through the router. The reopen router honors the same guard via `REOPEN_ROUTER_SKIP_CAMPAIGNS`.
-- Resolved conversation: do not show the menu again by default. `DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED` must be explicitly enabled to change this.
+- Broadcast/campaign conversation: never send the menu and never reassign it while its campaign marker is active, even when the customer replies immediately or the conversation is still Unassigned. The external uploader writes a verified `pending` marker before sending and changes it to `sent` afterwards. Pending markers expire after one hour if a job is interrupted. `CAMPAIGN_MARKER_TTL_SECONDS` controls how long successful external campaign replies bypass both routers (default 30 days); native Chatwoot `campaign_id` conversations remain protected. Use the same TTL in both apps.
+- Resolved conversation: do not show the menu again by default. With `DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED=false`, the next customer reply stays in the saved Sales/Operations department and is reassigned to an eligible online member without sending the menu. Enable the option only when you intentionally want the customer to choose a department again.
 - While waiting for the department choice, remove any temporary agent assignment so the conversation cannot be handled by the wrong department.
 - A human agent handling the conversation wins. If the conversation currently has an assignee that the router did not assign itself, the router leaves it completely alone — no menu, no unassign, no reroute — even when that agent is offline. This is what stops the bot from hijacking a conversation an agent self-assigned (for example a campaign reply: an agent self-assigns the contact, the customer replies, and the bot must not take over). The check runs before any prompt or routing. The only exception is the new-contact first-message flow (`new_waiting_incoming`), which still clears a temporary auto-assignment before prompting; campaign conversations never reach that state.
-- Resolving releases the manual lock: once an agent resolves a conversation, their ownership ends. When the customer reopens it, the router prompts again (if `DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED` is on), drops the previous assignee, and routes to an online agent (or team-unassigned outside business hours) — so a reopened conversation never sticks to the agent who resolved it when that agent has gone offline.
+- Resolving always releases the manual lock, regardless of the menu setting. When the customer reopens it, the previous agent is kept only if they are still online and eligible; otherwise it moves to another online member of the saved department, or to that team's Unassigned queue when no eligible agent is available.
 - Old open conversation already assigned to an agent: left alone (see above). The router only moves an agent it assigned itself when that agent is no longer an eligible online team/inbox member; a human-assigned agent is never moved.
-- Old open conversation with no known Sales/Operations team: do nothing. Never send the menu just because an old conversation has no saved department.
+- Old open conversation with no known Sales/Operations team: the Department Router does not show the menu and passes the event to the Reopen Router, which can still rescue an unavailable or unassigned conversation using its configured safe team.
 - While waiting for `1` or `2`, an invalid reply does not repeat the menu. Duplicate `message_created` webhooks are ignored by message id.
 - No online eligible member: assign the selected team and leave the agent unassigned so nobody outside the team receives the conversation.
-- Routing state is stored both locally and in Chatwoot conversation custom attributes. Local state remains the fallback when custom attributes are unavailable.
+- Routing state and the router-assigned agent id are stored both locally and in Chatwoot conversation custom attributes. After a Railway redeploy, Chatwoot remains the ownership source of truth so an automated assignment is not mistaken for a human takeover.
 
 For WhatsApp, the default menu is text-based because it works reliably for every provider. Chatwoot supports interactive message content types, but WhatsApp reply buttons generally require a compatible provider flow or an approved WhatsApp template. Keep the text menu unless the WhatsApp integration has a tested interactive template.
 

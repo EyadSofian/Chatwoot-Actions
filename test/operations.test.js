@@ -502,6 +502,8 @@ test("handleDepartmentRouterWebhook routes choice 1 to an online sales team inbo
     assert.deepEqual(assignmentBody, { team_id: 4, assignee_id: 7 });
     assert.equal(customAttributesBody.custom_attributes.engosoft_department, "sales");
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "routed");
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_auto_assigned_agent_id, "7");
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_manual_assignment, false);
     assert.equal(outgoingMessages.length, 1);
     assert.match(outgoingMessages[0].content, /المبيعات/);
   } finally {
@@ -1031,6 +1033,211 @@ test("handleDepartmentRouterWebhook marks resolved conversations to prompt on th
   }
 });
 
+test("handleDepartmentRouterWebhook reroutes a resolved conversation inside its saved department without a menu", async () => {
+  let phase = "resolved";
+  let customAttributes = {
+    engosoft_department: "sales",
+    engosoft_department_route_state: "routed",
+    engosoft_department_team_id: 4,
+    engosoft_department_auto_assigned_agent_id: "9",
+    engosoft_department_manual_assignment: false
+  };
+  const assignments = [];
+  const outgoingMessages = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: phase === "resolved" ? "resolved" : "open",
+        inbox_id: 2,
+        team_id: 4,
+        custom_attributes: customAttributes,
+        meta: {
+          sender: { id: 10, name: "Ahmed" },
+          assignee: { id: 9, name: "Old Sales Agent", availability_status: "offline" },
+          inbox: { id: 2, name: "WhatsApp" }
+        }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      const body = await readRequestJson(req);
+      customAttributes = body.custom_attributes;
+      res.end(JSON.stringify({ custom_attributes: customAttributes }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/teams/4/team_members") {
+      res.end(JSON.stringify([
+        { id: 7, name: "Online Sales Agent", availability_status: "online" },
+        { id: 9, name: "Old Sales Agent", availability_status: "offline" }
+      ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
+      res.end(JSON.stringify({
+        payload: [
+          { id: 7, name: "Online Sales Agent", availability_status: "online" },
+          { id: 9, name: "Old Sales Agent", availability_status: "offline" }
+        ]
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignments.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 700 }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore();
+    const options = {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      promptOnResolved: false,
+      stateStore,
+      audit: false
+    };
+
+    const resolved = await handleDepartmentRouterWebhook({
+      event: "conversation_status_changed",
+      id: 33,
+      status: "resolved",
+      inbox_id: 2
+    }, options);
+
+    assert.equal(resolved.action, "marked_for_reentry");
+    assert.equal(customAttributes.engosoft_department_prompt_next, false);
+    assert.equal(customAttributes.engosoft_department_auto_assigned_agent_id, null);
+    assert.equal(customAttributes.engosoft_department_manual_assignment, false);
+
+    phase = "reopened";
+    const incoming = reopenPayload();
+    incoming.message.content = "question";
+    const rerouted = await handleDepartmentRouterWebhook(incoming, options);
+
+    assert.equal(rerouted.action, "department_assigned");
+    assert.equal(rerouted.reason, "resolved_conversation_reopened");
+    assert.equal(rerouted.department, "sales");
+    assert.equal(rerouted.toAgentId, 7);
+    assert.deepEqual(assignments, [{ team_id: 4, assignee_id: 7 }]);
+    assert.equal(outgoingMessages.length, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook restores automated ownership from Chatwoot after local state is lost", async () => {
+  let assignmentBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        team_id: 4,
+        custom_attributes: {
+          engosoft_department: "sales",
+          engosoft_department_route_state: "routed",
+          engosoft_department_team_id: 4,
+          engosoft_department_auto_assigned_agent_id: "9",
+          engosoft_department_manual_assignment: false
+        },
+        meta: {
+          assignee: { id: 9, name: "Old Automated Agent", availability_status: "offline" }
+        }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/teams/4/team_members") {
+      res.end(JSON.stringify([
+        { id: 7, name: "Online Sales Agent", availability_status: "online" },
+        { id: 9, name: "Old Automated Agent", availability_status: "offline" }
+      ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
+      res.end(JSON.stringify({
+        payload: [
+          { id: 7, name: "Online Sales Agent", availability_status: "online" },
+          { id: 9, name: "Old Automated Agent", availability_status: "offline" }
+        ]
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentBody = await readRequestJson(req);
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      const body = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: body.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore();
+    const result = await handleDepartmentRouterWebhook(reopenPayload(), {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.action, "department_assigned");
+    assert.equal(result.toAgentId, 7);
+    assert.deepEqual(assignmentBody, { team_id: 4, assignee_id: 7 });
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("handleDepartmentRouterWebhook ignores old open conversations with no known department", async () => {
   let writeCalls = 0;
   const server = createServer((req, res) => {
@@ -1076,6 +1283,52 @@ test("handleDepartmentRouterWebhook ignores old open conversations with no known
     // An old conversation an agent is already handling is left alone.
     assert.equal(result.reason, "manual_assignment_active");
     assert.equal(writeCalls, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook lets the reopen router inspect an unassigned conversation with no known department", async () => {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: {},
+        meta: { assignee: null }
+      }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore();
+    const result = await handleDepartmentRouterWebhook(reopenPayload(), {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      promptOnNew: false,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.reason, "existing_department_unknown");
+    assert.equal(result.handled, false);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -1193,6 +1446,122 @@ test("handleDepartmentRouterWebhook never prompts or routes broadcast conversati
     assert.equal(replied.skipped, true);
     assert.equal(replied.reason, "broadcast_conversation");
     assert.equal(writeCalls, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("campaign pending markers block both routers even when the conversation is unassigned", async () => {
+  let writeCalls = 0;
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: {
+          api_campaign_label: "june",
+          api_campaign_status: "pending",
+          api_campaign_active_until: "2099-01-01T00:00:00.000Z"
+        },
+        meta: { assignee: null }
+      }));
+      return;
+    }
+
+    writeCalls += 1;
+    res.end(JSON.stringify({ ok: true }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const connection = {
+      baseUrl: `http://127.0.0.1:${port}`,
+      accountId: "1",
+      apiToken: "test-token"
+    };
+    const department = await handleDepartmentRouterWebhook(reopenPayload(), {
+      connection,
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore: createMemoryDepartmentStateStore(),
+      audit: false
+    });
+    const reopen = await handleReopenRouterWebhook(reopenPayload(), {
+      connection,
+      enabled: true,
+      inboxIds: ["2"],
+      cooldownSeconds: 0,
+      audit: false
+    });
+
+    assert.equal(department.reason, "broadcast_conversation");
+    assert.equal(reopen.reason, "broadcast_conversation");
+    assert.equal(writeCalls, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("expired external campaign markers no longer block normal routing", async () => {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: {
+          api_campaign_label: "old-campaign",
+          api_campaign_status: "sent",
+          api_campaign_active_until: "2020-01-01T00:00:00.000Z"
+        },
+        meta: { assignee: null }
+      }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore({
+      33: {
+        conversationId: 33,
+        state: "broadcast",
+        campaignId: "old-campaign",
+        campaignExpiresAt: "2099-01-01T00:00:00.000Z"
+      }
+    });
+    const result = await handleDepartmentRouterWebhook(reopenPayload(), {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      promptOnNew: false,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.reason, "existing_department_unknown");
+    assert.equal(result.handled, false);
+    assert.equal((await stateStore.get(33)).state, "campaign_expired");
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
