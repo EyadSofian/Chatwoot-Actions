@@ -664,6 +664,72 @@ test("handleDepartmentRouterWebhook can route a choice to the team and leave it 
   }
 });
 
+test("handleDepartmentRouterWebhook does not touch a conversation a human agent is handling", async () => {
+  let assignmentCalled = false;
+  const outgoingMessages = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        contact_id: 10,
+        custom_attributes: {},
+        meta: {
+          sender: { id: 10, name: "Ahmed" },
+          // A human self-assigned this conversation (e.g. a campaign reply).
+          assignee: { id: 9, name: "Asmaa", availability_status: "offline" },
+          inbox: { id: 2, name: "WhatsApp" }
+        }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentCalled = true;
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 600 }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore();
+    const payload = reopenPayload();
+    payload.message.content = "نعم";
+    const result = await handleDepartmentRouterWebhook(payload, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "manual_assignment_active");
+    assert.equal(assignmentCalled, false);
+    assert.equal(outgoingMessages.length, 0);
+    assert.equal((await stateStore.get(33)).manualAssignment, true);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("handleDepartmentRouterWebhook keeps a manual assignment even when that agent is offline", async () => {
   let assignmentCalled = false;
   const server = createServer(async (req, res) => {
@@ -723,8 +789,9 @@ test("handleDepartmentRouterWebhook keeps a manual assignment even when that age
       audit: false
     });
 
-    assert.equal(result.action, "kept_manual_assignment");
-    assert.equal(result.toAgentId, 9);
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "manual_assignment_active");
+    assert.equal(result.assigneeId, 9);
     assert.equal(assignmentCalled, false);
     assert.equal((await stateStore.get(33)).manualAssignment, true);
   } finally {
@@ -1006,7 +1073,8 @@ test("handleDepartmentRouterWebhook ignores old open conversations with no known
     });
 
     assert.equal(result.skipped, true);
-    assert.equal(result.reason, "contact_id_unavailable");
+    // An old conversation an agent is already handling is left alone.
+    assert.equal(result.reason, "manual_assignment_active");
     assert.equal(writeCalls, 0);
   } finally {
     await new Promise(resolve => server.close(resolve));

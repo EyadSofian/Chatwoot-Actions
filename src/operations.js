@@ -592,6 +592,34 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
       return promptForDepartment(client, conversation, config, { reason: "resolved_conversation_reopened", force: true });
     }
 
+    // Leave the conversation alone if a human agent is actively handling it.
+    // The router only manages an assignment it made itself; any other current
+    // assignee is treated as a manual takeover (for example an agent who
+    // self-assigned a campaign conversation) and must not be prompted,
+    // unassigned, or rerouted. Resolving clears this lock (handled above).
+    const handlerAssigneeId = getConversationAssigneeId(conversation);
+    const handlerAutoAssignedAgentId = localRoute?.autoAssignedAgentId != null ? String(localRoute.autoAssignedAgentId) : null;
+    const humanAssigned = localRoute?.manualAssignment === true ||
+      (Boolean(handlerAssigneeId) && String(handlerAssigneeId) !== (handlerAutoAssignedAgentId || ""));
+    // Exempt the new-contact first-message flow: that path intentionally clears
+    // a temporary auto-assignment before prompting. Campaign conversations are
+    // never in this state (they are caught as broadcasts or reused without
+    // registration), so this does not reopen the campaign-hijack hole.
+    if (humanAssigned && routeState !== "new_waiting_incoming") {
+      if (localRoute?.manualAssignment !== true) {
+        await config.stateStore.save(conversationId, { manualAssignment: true });
+      }
+      return {
+        ok: true,
+        handled: true,
+        skipped: true,
+        reason: "manual_assignment_active",
+        conversationId,
+        inboxId,
+        assigneeId: handlerAssigneeId
+      };
+    }
+
     const selection = parseDepartmentSelection(content);
     if (routeState === "new_waiting_incoming") {
       return promptForDepartment(client, conversation, config, { reason: "first_incoming_message" });
@@ -841,15 +869,30 @@ function getConversationCampaignId(conversation) {
 // Detects conversations opened or touched by a broadcast/campaign. Covers both
 // Chatwoot native campaigns (campaign_id) and the external campaign uploader,
 // which marks conversations with custom attributes instead of a campaign id.
+const CAMPAIGN_MARKER_KEYS = [
+  "api_campaign_label",
+  "api_campaign_created_at",
+  "last_api_campaign_label",
+  "last_api_template"
+];
+
 function getConversationCampaignMarker(conversation) {
   const nativeId = getConversationCampaignId(conversation);
   if (nativeId) return String(nativeId);
 
-  const customAttributes = getConversationCustomAttributes(conversation);
-  if (customAttributes.api_campaign_label) return String(customAttributes.api_campaign_label);
-  if (customAttributes.last_api_campaign_label) return String(customAttributes.last_api_campaign_label);
-  const sentKey = Object.keys(customAttributes).find(key => key.startsWith("api_sent_"));
-  if (sentKey) return sentKey;
+  // The external campaign uploader writes these markers to the conversation's
+  // custom_attributes (and occasionally additional_attributes). Scan both.
+  const sources = [
+    getConversationCustomAttributes(conversation),
+    conversation?.additional_attributes || conversation?.additionalAttributes || {}
+  ];
+  for (const source of sources) {
+    for (const key of CAMPAIGN_MARKER_KEYS) {
+      if (source[key]) return String(source[key]);
+    }
+    const sentKey = Object.keys(source).find(key => key.startsWith("api_sent_"));
+    if (sentKey) return sentKey;
+  }
   return null;
 }
 
