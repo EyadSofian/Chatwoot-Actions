@@ -128,13 +128,15 @@ DEPARTMENT_ROUTER_ENABLED=true
 DEPARTMENT_ROUTER_INBOX_IDS=27
 DEPARTMENT_ROUTER_SALES_TEAM_ID=4
 DEPARTMENT_ROUTER_OPERATIONS_TEAM_ID=3
+DEPARTMENT_ROUTER_SALES_AGENT_IDS=20,18
+DEPARTMENT_ROUTER_OPERATIONS_AGENT_IDS=21,28,71,73,22
 DEPARTMENT_ROUTER_PROMPT_ON_NEW=true
 DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED=true
 DEPARTMENT_ROUTER_NEW_CONTACTS_ONLY=true
 DEPARTMENT_ROUTER_CONFIRM_SELECTION=true
 DEPARTMENT_ROUTER_SKIP_CAMPAIGNS=true
 DEPARTMENT_ROUTER_ASSIGN_AGENT=true
-DEPARTMENT_ROUTER_SALES_ASSIGNMENT_MODE=any_status
+DEPARTMENT_ROUTER_SALES_ASSIGNMENT_MODE=online
 DEPARTMENT_ROUTER_COMPLAINT_AGENT_NAME=Abdelrahman Tarek
 # Or set the exact Chatwoot user id to avoid name matching:
 # DEPARTMENT_ROUTER_COMPLAINT_AGENT_ID=123
@@ -143,7 +145,13 @@ CAMPAIGN_MARKER_TTL_SECONDS=2592000
 
 Chatwoot's assignment endpoint ignores `team_id` when `assignee_id` is present, so this router always sets the team and the assignee in two separate calls when both are needed.
 
-`DEPARTMENT_ROUTER_ASSIGN_AGENT=false` is still supported for Trainee Support/Operations: after the customer chooses that path, the router assigns the conversation to the Operations team and leaves it Unassigned for the team's agents to pick up. Sales uses `DEPARTMENT_ROUTER_SALES_ASSIGNMENT_MODE=any_status` by default because the playbook says to route to the Resale team sequentially whether agents are online or offline.
+`DEPARTMENT_ROUTER_SALES_AGENT_IDS` and `DEPARTMENT_ROUTER_OPERATIONS_AGENT_IDS` are strict allowlists. A target must be in the configured list, the selected Chatwoot team, and inbox `27`. This prevents an accidental team member such as a Resale agent from receiving Trainee Support.
+
+Keep `DEPARTMENT_ROUTER_SALES_ASSIGNMENT_MODE=online` so agents who are offline or on leave do not receive new Sales conversations. When no allowed agent is online, the router assigns the selected team and leaves the conversation Unassigned.
+
+For inbox `27`, disable the generic Reopen Router (`REOPEN_ROUTER_ENABLED=false`). The Department Router owns new, routed, and reopened conversations and keeps their department boundary. A generic Reopen Router configured with team `3` can otherwise move an unknown Sales conversation into Operations.
+
+In Chatwoot, disable team Auto Assignment for teams `3` and `4`, and disable assignment/unassignment Automation rules for inbox `27`. Assigning a team while Chatwoot Auto Assignment is enabled can temporarily assign an unrelated team member before this app applies its selected agent.
 
 ### Business hours
 
@@ -181,14 +189,15 @@ Behavior:
 - Existing contact whose previous conversations are all `resolved`: treat the next conversation as a fresh entry and send the menu after the first incoming message.
 - Broadcast/campaign conversation: never send the menu and never reassign it while its campaign marker is active, even when the customer replies immediately or the conversation is still Unassigned. The external uploader writes a verified `pending` marker before sending and changes it to `sent` afterwards. Pending markers expire after one hour if a job is interrupted. `CAMPAIGN_MARKER_TTL_SECONDS` controls how long successful external campaign replies bypass both routers (default 30 days); native Chatwoot `campaign_id` conversations remain protected. Use the same TTL in both apps.
 - Resolved conversation: the next customer reply is treated as a fresh entry and the menu is sent again. This is the default with `DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED=true`.
-- Sales / option `1`: send the quick acknowledgement, then route to the Resale team. With `DEPARTMENT_ROUTER_SALES_ASSIGNMENT_MODE=any_status`, the router can assign an eligible Resale team/inbox member even if they are offline.
+- Sales / option `1`: send the quick acknowledgement, then route only to online Resale agents in `DEPARTMENT_ROUTER_SALES_AGENT_IDS`. If none are online, leave it Unassigned in the Resale team.
 - Trainee Support / option `2`: ask for full name, registered phone, and booked course, then assign an online Operations team/inbox member. If no eligible Operations agent is online, assign the Operations team and leave the conversation Unassigned.
 - Complaints / option `3`: first send the complaint warning and ask the customer to confirm. If they reply `1`, route them to Trainee Support. If they reply `2`, ask for complaint details, send the received confirmation, and assign to `DEPARTMENT_ROUTER_COMPLAINT_AGENT_ID`, `DEPARTMENT_ROUTER_COMPLAINT_AGENT_EMAIL`, or `DEPARTMENT_ROUTER_COMPLAINT_AGENT_NAME` even if that person is offline.
 - The router only reacts to public incoming customer messages. Agent/user outgoing messages are ignored even when the conversation is waiting for the first customer reply.
 - A human agent handling the conversation wins. If the conversation currently has an assignee that the router did not assign itself, the router leaves it completely alone — no menu, no unassign, no reroute — even when that agent is offline. This includes the new-contact first-message flow, so an agent who self-assigns before the customer replies will not be interrupted.
 - Resolving always releases the manual lock so the next customer message can enter the menu flow again.
 - Old open conversation already assigned to an agent: left alone (see above). The router only moves an agent it assigned itself when that agent is no longer an eligible online team/inbox member; a human-assigned agent is never moved.
-- Old open conversation with no known Sales/Operations/Complaints route: the Department Router does not show the menu and passes the event to the Reopen Router, which can still rescue an unavailable or unassigned conversation using its configured safe team.
+- A reopened conversation whose old `conversation_status_changed` webhook was missed is detected from the latest resolved activity in its Chatwoot message history. The old assignee is cleared and the department menu is shown.
+- Old open conversation with no known Sales/Operations/Complaints route: the Department Router leaves it untouched and does not pass it to a generic team router, preventing cross-department assignment.
 - While waiting for `1`, `2`, or `3`, an invalid reply does not repeat the menu. Duplicate `message_created` webhooks are ignored by message id.
 - No online eligible member: assign the selected team and leave the agent unassigned so nobody outside the team receives the conversation.
 - Routing state and the router-assigned agent id are stored both locally and in Chatwoot conversation custom attributes. After a Railway redeploy, Chatwoot remains the ownership source of truth so an automated assignment is not mistaken for a human takeover.

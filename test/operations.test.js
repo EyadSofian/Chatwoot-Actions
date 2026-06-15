@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import {
   buildPhoneAssignPreview,
   extractPhoneNumbers,
+  filterDepartmentAgents,
   getOpenConversationReport,
   handleDepartmentRouterWebhook,
   handleReopenRouterWebhook,
@@ -43,6 +44,26 @@ test("parseDepartmentSelection understands numeric, Arabic, and English replies"
   assert.equal(parseDepartmentSelection("دعم المتدربين"), "operations");
   assert.equal(parseDepartmentSelection("شكاوي"), "complaints");
   assert.equal(parseDepartmentSelection("محتاج مساعدة"), null);
+});
+
+test("filterDepartmentAgents enforces team, inbox, and configured agent ids", () => {
+  const teamAgents = [
+    { id: 20, name: "Asmaa Fathy", availability_status: "online" },
+    { id: 18, name: "Mena Magdy", availability_status: "online" },
+    { id: 74, name: "Nader Aziz", availability_status: "online" }
+  ];
+  const inboxAgents = {
+    payload: [
+      { id: 20, name: "Asmaa Fathy" },
+      { id: 74, name: "Nader Aziz" },
+      { id: 99, name: "Outside Team" }
+    ]
+  };
+
+  assert.deepEqual(
+    filterDepartmentAgents(teamAgents, inboxAgents, ["20", "18"]).map(agent => agent.id),
+    [20]
+  );
 });
 
 test("isWithinBusinessHours respects timezone, time range, and working days", () => {
@@ -411,7 +432,7 @@ test("handleReopenRouterWebhook assigns incoming reopened conversations to an on
   }
 });
 
-test("handleDepartmentRouterWebhook routes choice 1 to a resale team inbox member even when offline", async () => {
+test("handleDepartmentRouterWebhook routes choice 1 to an online resale team inbox member", async () => {
   const assignmentBodies = [];
   let customAttributesBody = null;
   const outgoingMessages = [];
@@ -438,8 +459,8 @@ test("handleDepartmentRouterWebhook routes choice 1 to a resale team inbox membe
 
     if (url.pathname === "/api/v1/accounts/1/teams/4/team_members") {
       res.end(JSON.stringify([
-        { id: 7, name: "Resale Offline", availability_status: "offline" },
-        { id: 9, name: "Resale Outside Inbox", availability_status: "online" }
+        { id: 20, name: "Asmaa Fathy", availability_status: "online" },
+        { id: 74, name: "Nader Aziz", availability_status: "online" }
       ]));
       return;
     }
@@ -447,7 +468,7 @@ test("handleDepartmentRouterWebhook routes choice 1 to a resale team inbox membe
     if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
       res.end(JSON.stringify({
         payload: [
-          { id: 7, name: "Resale Offline", availability_status: "offline" }
+          { id: 20, name: "Asmaa Fathy", availability_status: "online" }
         ]
       }));
       return;
@@ -498,14 +519,14 @@ test("handleDepartmentRouterWebhook routes choice 1 to a resale team inbox membe
     });
 
     assert.equal(result.handled, true);
-    assert.equal(result.action, "department_assigned_any_status");
+    assert.equal(result.action, "department_assigned");
     assert.equal(result.department, "sales");
     assert.equal(result.teamId, 4);
-    assert.equal(result.toAgentId, 7);
-    assert.deepEqual(assignmentBodies, [{ team_id: 4 }, { assignee_id: 7 }]);
+    assert.equal(result.toAgentId, 20);
+    assert.deepEqual(assignmentBodies, [{ team_id: 4 }, { assignee_id: 20 }]);
     assert.equal(customAttributesBody.custom_attributes.engosoft_department, "sales");
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "routed");
-    assert.equal(customAttributesBody.custom_attributes.engosoft_department_auto_assigned_agent_id, "7");
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_auto_assigned_agent_id, "20");
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_manual_assignment, false);
     assert.equal(outgoingMessages.length, 1);
     assert.match(outgoingMessages[0].content, /صبرك/);
@@ -691,8 +712,9 @@ test("handleDepartmentRouterWebhook routes trainee support to an online operatio
 
     if (url.pathname === "/api/v1/accounts/1/teams/3/team_members") {
       res.end(JSON.stringify([
-        { id: 8, name: "Operations Online", availability_status: "online" },
-        { id: 9, name: "Operations Offline", availability_status: "offline" }
+        { id: 74, name: "Nader Aziz", availability_status: "online" },
+        { id: 12, name: "Abdelrahman Tarek", availability_status: "online" },
+        { id: 21, name: "Abdelrman Adel", availability_status: "online" }
       ]));
       return;
     }
@@ -700,8 +722,7 @@ test("handleDepartmentRouterWebhook routes trainee support to an online operatio
     if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
       res.end(JSON.stringify({
         payload: [
-          { id: 8, name: "Operations Online", availability_status: "online" },
-          { id: 9, name: "Operations Offline", availability_status: "offline" }
+          { id: 21, name: "Abdelrman Adel", availability_status: "online" }
         ]
       }));
       return;
@@ -747,10 +768,10 @@ test("handleDepartmentRouterWebhook routes trainee support to an online operatio
 
     assert.equal(result.action, "department_assigned");
     assert.equal(result.department, "operations");
-    assert.equal(result.toAgentId, 8);
-    assert.deepEqual(assignmentBodies, [{ team_id: 3 }, { assignee_id: 8 }]);
+    assert.equal(result.toAgentId, 21);
+    assert.deepEqual(assignmentBodies, [{ team_id: 3 }, { assignee_id: 21 }]);
     assert.equal(customAttributesBody.custom_attributes.engosoft_department, "operations");
-    assert.equal(customAttributesBody.custom_attributes.engosoft_department_auto_assigned_agent_id, "8");
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_auto_assigned_agent_id, "21");
     assert.equal(outgoingMessages.length, 1);
     assert.match(outgoingMessages[0].content, /الاسم الثلاثي/);
   } finally {
@@ -778,7 +799,7 @@ test("handleDepartmentRouterWebhook queues trainee support when no online operat
 
     if (url.pathname === "/api/v1/accounts/1/teams/3/team_members") {
       res.end(JSON.stringify([
-        { id: 8, name: "Operations Offline", availability_status: "offline" }
+        { id: 21, name: "Abdelrman Adel", availability_status: "offline" }
       ]));
       return;
     }
@@ -786,7 +807,7 @@ test("handleDepartmentRouterWebhook queues trainee support when no online operat
     if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
       res.end(JSON.stringify({
         payload: [
-          { id: 8, name: "Operations Offline", availability_status: "offline" }
+          { id: 21, name: "Abdelrman Adel", availability_status: "offline" }
         ]
       }));
       return;
@@ -1680,6 +1701,95 @@ test("handleDepartmentRouterWebhook prompts a resolved conversation again on the
   }
 });
 
+test("handleDepartmentRouterWebhook detects a legacy resolved reopen from conversation activities", async () => {
+  const assignments = [];
+  const outgoingMessages = [];
+  let customAttributesBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: {},
+        messages: [
+          { id: 1, message_type: 1, sender_type: "User", content: "Old reply", created_at: 100 },
+          {
+            id: 2,
+            message_type: 2,
+            content_type: "activity",
+            content: "Conversation was marked resolved by Abdelrman Adel",
+            created_at: 200
+          },
+          { id: 99, message_type: 0, sender_type: "Contact", content: "New question", created_at: 300 }
+        ],
+        meta: {
+          sender: { id: 10, name: "Returning Customer" },
+          assignee: { id: 21, name: "Abdelrman Adel", availability_status: "offline" },
+          inbox: { id: 2, name: "WhatsApp" }
+        }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignments.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 701 }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const incoming = reopenPayload();
+    incoming.message.content = "New question";
+    incoming.message.created_at = 300;
+
+    const result = await handleDepartmentRouterWebhook(incoming, {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      promptOnResolved: true,
+      stateStore: createMemoryDepartmentStateStore(),
+      audit: false
+    });
+
+    assert.equal(result.action, "department_prompt_sent");
+    assert.equal(result.reason, "resolved_conversation_reopened");
+    assert.deepEqual(assignments, [{ assignee_id: null }]);
+    assert.equal(outgoingMessages.length, 1);
+    assert.match(outgoingMessages[0].content, /اضغط 1/);
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "pending");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("handleDepartmentRouterWebhook restores automated ownership from Chatwoot after local state is lost", async () => {
   const assignmentBodies = [];
   const server = createServer(async (req, res) => {
@@ -1816,7 +1926,7 @@ test("handleDepartmentRouterWebhook ignores old open conversations with no known
   }
 });
 
-test("handleDepartmentRouterWebhook lets the reopen router inspect an unassigned conversation with no known department", async () => {
+test("handleDepartmentRouterWebhook keeps unknown conversations inside the department router boundary", async () => {
   const server = createServer((req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
     res.setHeader("content-type", "application/json; charset=utf-8");
@@ -1856,7 +1966,7 @@ test("handleDepartmentRouterWebhook lets the reopen router inspect an unassigned
     });
 
     assert.equal(result.reason, "existing_department_unknown");
-    assert.equal(result.handled, false);
+    assert.equal(result.handled, true);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -2088,7 +2198,7 @@ test("expired external campaign markers no longer block normal routing", async (
     });
 
     assert.equal(result.reason, "existing_department_unknown");
-    assert.equal(result.handled, false);
+    assert.equal(result.handled, true);
     assert.equal((await stateStore.get(33)).state, "campaign_expired");
   } finally {
     await new Promise(resolve => server.close(resolve));

@@ -596,12 +596,14 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
       undefined,
       false
     );
+    const legacyResolvedReopen = config.promptOnResolved &&
+      wasResolvedImmediatelyBeforeIncoming(conversation, message);
 
     if (isDepartmentChangeRequest(content)) {
       return promptForDepartment(client, conversation, config, { reason: "customer_requested_change", force: true });
     }
 
-    if ((promptNext || routeState === "resolved") && config.promptOnResolved) {
+    if ((promptNext || routeState === "resolved" || legacyResolvedReopen) && config.promptOnResolved) {
       return promptForDepartment(client, conversation, config, { reason: "resolved_conversation_reopened", force: true });
     }
 
@@ -697,7 +699,7 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
 
     return {
       ok: true,
-      handled: false,
+      handled: true,
       skipped: true,
       reason: "existing_department_unknown",
       conversationId,
@@ -712,6 +714,16 @@ function buildDepartmentRouterConfig(options = {}) {
     inboxIds: parseListOption(options.inboxIds, process.env.DEPARTMENT_ROUTER_INBOX_IDS, []).map(String),
     salesTeamId: String(options.salesTeamId ?? process.env.DEPARTMENT_ROUTER_SALES_TEAM_ID ?? ""),
     operationsTeamId: String(options.operationsTeamId ?? process.env.DEPARTMENT_ROUTER_OPERATIONS_TEAM_ID ?? ""),
+    salesAgentIds: parseListOption(
+      options.salesAgentIds,
+      process.env.DEPARTMENT_ROUTER_SALES_AGENT_IDS,
+      []
+    ).map(String),
+    operationsAgentIds: parseListOption(
+      options.operationsAgentIds,
+      process.env.DEPARTMENT_ROUTER_OPERATIONS_AGENT_IDS,
+      []
+    ).map(String),
     promptOnNew: parseBooleanOption(options.promptOnNew, process.env.DEPARTMENT_ROUTER_PROMPT_ON_NEW, true),
     promptOnResolved: parseBooleanOption(options.promptOnResolved, process.env.DEPARTMENT_ROUTER_PROMPT_ON_RESOLVED, true),
     newContactsOnly: parseBooleanOption(options.newContactsOnly, process.env.DEPARTMENT_ROUTER_NEW_CONTACTS_ONLY, true),
@@ -734,7 +746,7 @@ function buildDepartmentRouterConfig(options = {}) {
       "يرجى تزويدنا بالبيانات التالية\n1. الاسم الثلاثي\n2. رقم الهاتف الذي تم التسجيل به\n3. الدورة التي تم حجزها\n4. ملخص الشكوى"),
     complaintReceivedText: String(options.complaintReceivedText ?? process.env.DEPARTMENT_ROUTER_COMPLAINT_RECEIVED_TEXT ??
       "تم إستلام الشكوى و سيتم الرد عليكم من 48 إلى 72 ساعة عمل"),
-    salesAssignmentMode: String(options.salesAssignmentMode ?? process.env.DEPARTMENT_ROUTER_SALES_ASSIGNMENT_MODE ?? "any_status").toLowerCase(),
+    salesAssignmentMode: String(options.salesAssignmentMode ?? process.env.DEPARTMENT_ROUTER_SALES_ASSIGNMENT_MODE ?? "online").toLowerCase(),
     complaintAgentId: String(options.complaintAgentId ?? process.env.DEPARTMENT_ROUTER_COMPLAINT_AGENT_ID ?? "").trim(),
     complaintAgentEmail: String(options.complaintAgentEmail ?? process.env.DEPARTMENT_ROUTER_COMPLAINT_AGENT_EMAIL ?? "").trim().toLowerCase(),
     complaintAgentName: String(options.complaintAgentName ?? process.env.DEPARTMENT_ROUTER_COMPLAINT_AGENT_NAME ?? DEFAULT_COMPLAINT_AGENT_NAME).trim(),
@@ -1253,9 +1265,8 @@ async function routeConversationToDepartment(
     client.listTeamAgents(teamId),
     client.listInboxAgents(inboxId)
   ]);
-  const teamAgents = normalizeRows(teamAgentsResponse);
-  const inboxAgentIds = new Set(normalizeRows(inboxAgentsResponse).map(agent => String(getAgentId(agent))));
-  const eligibleAgents = teamAgents.filter(agent => inboxAgentIds.has(String(getAgentId(agent))));
+  const allowedAgentIds = department === "sales" ? config.salesAgentIds : config.operationsAgentIds;
+  const eligibleAgents = filterDepartmentAgents(teamAgentsResponse, inboxAgentsResponse, allowedAgentIds);
   const currentAgent = eligibleAgents.find(agent => String(getAgentId(agent)) === String(currentAssigneeId));
   const currentIsEligibleOnline = Boolean(currentAgent && getAgentAvailability(currentAgent) === "online");
 
@@ -1320,6 +1331,17 @@ async function routeConversationToDepartment(
     ...details,
     result: assignmentResult
   };
+}
+
+export function filterDepartmentAgents(teamAgentsResponse, inboxAgentsResponse, allowedAgentIds = []) {
+  const teamAgents = normalizeRows(teamAgentsResponse);
+  const inboxAgentIds = new Set(normalizeRows(inboxAgentsResponse).map(agent => String(getAgentId(agent))));
+  const whitelist = new Set((allowedAgentIds || []).map(String));
+  return teamAgents.filter(agent => {
+    const agentId = String(getAgentId(agent));
+    if (!agentId || !inboxAgentIds.has(agentId)) return false;
+    return whitelist.size === 0 || whitelist.has(agentId);
+  });
 }
 
 async function routeComplaintToAgent(client, conversation, config, reason) {
@@ -1493,6 +1515,63 @@ function getKnownConversationDepartment(conversation, config, localRoute = null)
   if (teamId && teamId === config.salesTeamId) return "sales";
   if (teamId && teamId === config.operationsTeamId) return "operations";
   return null;
+}
+
+function wasResolvedImmediatelyBeforeIncoming(conversation, incomingMessage) {
+  const messages = normalizeRows(conversation?.messages);
+  if (messages.length === 0) return false;
+
+  const incomingId = incomingMessage?.id == null ? "" : String(incomingMessage.id);
+  const incomingTime = getMessageTimeMs(incomingMessage);
+  const priorMessages = messages
+    .map((message, index) => ({ message, index, timeMs: getMessageTimeMs(message) }))
+    .filter(entry => {
+      if (incomingId && String(entry.message?.id || "") === incomingId) return false;
+      if (incomingTime != null && entry.timeMs != null) return entry.timeMs <= incomingTime;
+      return true;
+    })
+    .sort((left, right) => {
+      const leftValue = left.timeMs ?? left.index;
+      const rightValue = right.timeMs ?? right.index;
+      return leftValue - rightValue || left.index - right.index;
+    });
+
+  let lastResolvedIndex = -1;
+  for (let index = 0; index < priorMessages.length; index += 1) {
+    if (isResolvedActivityMessage(priorMessages[index].message)) lastResolvedIndex = index;
+  }
+  if (lastResolvedIndex < 0) return false;
+
+  return !priorMessages
+    .slice(lastResolvedIndex + 1)
+    .some(entry => isPublicMessage(entry.message));
+}
+
+function isResolvedActivityMessage(message) {
+  if (!message) return false;
+  const contentAttributes = message.content_attributes || message.contentAttributes || {};
+  const additionalAttributes = message.additional_attributes || message.additionalAttributes || {};
+  const values = [
+    contentAttributes.status,
+    contentAttributes.event,
+    contentAttributes.action,
+    additionalAttributes.status,
+    additionalAttributes.event,
+    additionalAttributes.action
+  ].map(value => String(value || "").toLowerCase());
+  if (values.some(value => value === "resolved" || value.includes("conversation_resolved"))) return true;
+
+  const type = getMessageType(message);
+  const contentType = String(message.content_type || message.contentType || "").toLowerCase();
+  if (type !== 2 && type !== "activity" && contentType !== "activity") return false;
+
+  const content = normalizeDepartmentText(message.content || message.processed_message_content || "");
+  return content.includes("marked resolved") ||
+    content.includes("conversation resolved") ||
+    content.includes("تم حل المحادثه") ||
+    content.includes("تم حل المحادثة") ||
+    content.includes("تم اغلاق المحادثه") ||
+    content.includes("تم اغلاق المحادثة");
 }
 
 export function parseDepartmentSelection(content) {
