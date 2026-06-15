@@ -626,11 +626,7 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
     const handlerAutoAssignedAgentId = getSavedAutoAssignedAgentId(conversation, localRoute);
     const humanAssigned = getSavedManualAssignment(conversation, localRoute) ||
       (Boolean(handlerAssigneeId) && String(handlerAssigneeId) !== (handlerAutoAssignedAgentId || ""));
-    // Exempt the new-contact first-message flow: that path intentionally clears
-    // a temporary auto-assignment before prompting. Campaign conversations are
-    // never in this state (they are caught as broadcasts or reused without
-    // registration), so this does not reopen the campaign-hijack hole.
-    if (humanAssigned && routeState !== "new_waiting_incoming") {
+    if (humanAssigned) {
       if (localRoute?.manualAssignment !== true) {
         await config.stateStore.save(conversationId, { manualAssignment: true });
       }
@@ -2382,9 +2378,12 @@ function compareMessageEntries(left, right) {
 
 function isCustomerMessage(message) {
   if (!isPublicMessage(message)) return false;
+  const senderType = getSenderType(message);
+  if (senderType === "user" || senderType === "agent") return false;
+  if (senderType === "contact") return true;
   const type = getMessageType(message);
   if (type === 0 || type === "incoming") return true;
-  return getSenderType(message) === "contact";
+  return false;
 }
 
 function isSalesReplyMessage(message) {

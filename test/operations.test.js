@@ -1143,7 +1143,7 @@ test("handleDepartmentRouterWebhook waits for the first incoming message before 
         custom_attributes: {},
         meta: {
           sender: { id: 10, name: "New Contact" },
-          assignee: { id: 4, name: "Temporary Agent" }
+          assignee: null
         }
       }));
       return;
@@ -1216,9 +1216,139 @@ test("handleDepartmentRouterWebhook waits for the first incoming message before 
     assert.match(outgoingMessages[0].content, /اضغط 1/);
     assert.match(outgoingMessages[0].content, /اضغط 2/);
     assert.match(outgoingMessages[0].content, /اضغط 3/);
-    assert.deepEqual(assignmentBody, { assignee_id: null });
+    assert.equal(assignmentBody, null);
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "pending");
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_prompt_next, false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook does not prompt a new waiting conversation already held by a human", async () => {
+  let assignmentCalled = false;
+  const outgoingMessages = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        contact_id: 10,
+        custom_attributes: {},
+        meta: {
+          sender: { id: 10, name: "New Contact" },
+          assignee: { id: 4, name: "Mahmoud Hassan" }
+        }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentCalled = true;
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 509 }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore({
+      33: { conversationId: 33, state: "new_waiting_incoming" }
+    });
+    const incoming = reopenPayload();
+    incoming.message.content = "نعم";
+    const result = await handleDepartmentRouterWebhook(incoming, {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "manual_assignment_active");
+    assert.equal(result.assigneeId, 4);
+    assert.equal(assignmentCalled, false);
+    assert.equal(outgoingMessages.length, 0);
+    assert.equal((await stateStore.get(33)).manualAssignment, true);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook ignores agent-created messages even if the conversation is waiting", async () => {
+  let writeCalls = 0;
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        contact_id: 10,
+        custom_attributes: {},
+        meta: {
+          sender: { id: 10, name: "New Contact" },
+          assignee: null
+        }
+      }));
+      return;
+    }
+
+    writeCalls += 1;
+    res.end(JSON.stringify({ ok: true }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore({
+      33: { conversationId: 33, state: "new_waiting_incoming" }
+    });
+    const payload = reopenPayload();
+    payload.message.message_type = "outgoing";
+    payload.message.sender_type = "User";
+    payload.message.sender = { id: 4, type: "user", name: "Mahmoud Hassan" };
+    payload.message.content = "هتابع معاك";
+
+    const result = await handleDepartmentRouterWebhook(payload, {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "department_event_ignored");
+    assert.equal(writeCalls, 0);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -1306,7 +1436,7 @@ test("handleDepartmentRouterWebhook treats resolved-only contact history as a fr
         inbox_id: 2,
         contact_id: 10,
         custom_attributes: {},
-        meta: { sender: { id: 10, name: "Returning Resolved Contact" }, assignee: { id: 4, name: "Temporary Agent" } }
+        meta: { sender: { id: 10, name: "Returning Resolved Contact" }, assignee: null }
       }));
       return;
     }
@@ -1373,7 +1503,7 @@ test("handleDepartmentRouterWebhook treats resolved-only contact history as a fr
     assert.equal(prompted.action, "department_prompt_sent");
     assert.equal(outgoingMessages.length, 1);
     assert.match(outgoingMessages[0].content, /اضغط 1/);
-    assert.deepEqual(assignmentBody, { assignee_id: null });
+    assert.equal(assignmentBody, null);
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "pending");
   } finally {
     await new Promise(resolve => server.close(resolve));
