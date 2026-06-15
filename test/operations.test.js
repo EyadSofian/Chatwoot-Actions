@@ -928,7 +928,9 @@ test("handleDepartmentRouterWebhook marks resolved conversations to prompt on th
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
     const { port } = server.address();
-    const stateStore = createMemoryDepartmentStateStore();
+    const stateStore = createMemoryDepartmentStateStore({
+      33: { conversationId: 33, manualAssignment: true, autoAssignedAgentId: 9 }
+    });
     const result = await handleDepartmentRouterWebhook({
       event: "conversation_status_changed",
       id: 33,
@@ -953,6 +955,10 @@ test("handleDepartmentRouterWebhook marks resolved conversations to prompt on th
     assert.equal(result.action, "marked_for_reentry");
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_prompt_next, true);
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "resolved");
+    // Resolving releases the manual-assignment lock so the reopen reroutes.
+    const saved = await stateStore.get(33);
+    assert.equal(saved.manualAssignment, false);
+    assert.equal(saved.autoAssignedAgentId, null);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }

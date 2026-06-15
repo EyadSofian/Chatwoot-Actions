@@ -518,6 +518,11 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
         [DEPARTMENT_ATTRIBUTES.state]: "resolved",
         [DEPARTMENT_ATTRIBUTES.promptNext]: true
       });
+      // Resolving ends the agent's ownership. Release the manual-assignment lock
+      // so that when the customer reopens, the conversation is routed again to
+      // the bot menu and an online agent instead of sticking to the agent who
+      // resolved it (who is often offline by then).
+      await config.stateStore.save(conversationId, { manualAssignment: false, autoAssignedAgentId: null });
       await auditDepartmentRouter("department_router_marked_for_reentry", {
         conversationId,
         inboxId,
