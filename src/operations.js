@@ -597,7 +597,7 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
       false
     );
     const legacyResolvedReopen = config.promptOnResolved &&
-      wasResolvedImmediatelyBeforeIncoming(conversation, message);
+      wasResolvedReopenedWithoutAgentReply(conversation, message);
 
     if (isDepartmentChangeRequest(content)) {
       return promptForDepartment(client, conversation, config, { reason: "customer_requested_change", force: true });
@@ -1517,7 +1517,7 @@ function getKnownConversationDepartment(conversation, config, localRoute = null)
   return null;
 }
 
-function wasResolvedImmediatelyBeforeIncoming(conversation, incomingMessage) {
+function wasResolvedReopenedWithoutAgentReply(conversation, incomingMessage) {
   const messages = normalizeRows(conversation?.messages);
   if (messages.length === 0) return false;
 
@@ -1542,9 +1542,14 @@ function wasResolvedImmediatelyBeforeIncoming(conversation, incomingMessage) {
   }
   if (lastResolvedIndex < 0) return false;
 
+  // A customer who replies several times after a resolve is still reopening the
+  // same conversation, so their own incoming messages must not cancel the
+  // detection. Only an outgoing agent (or bot) reply after the resolve means a
+  // human has re-engaged, and in that case the router leaves the conversation
+  // alone instead of re-prompting.
   return !priorMessages
     .slice(lastResolvedIndex + 1)
-    .some(entry => isPublicMessage(entry.message));
+    .some(entry => isOutgoingPublicMessage(entry.message));
 }
 
 function isResolvedActivityMessage(message) {
@@ -2479,6 +2484,12 @@ function isPublicMessage(message) {
   if (type === 2 || type === "activity") return false;
   const contentType = String(message.content_type || message.contentType || "").toLowerCase();
   return contentType !== "activity";
+}
+
+function isOutgoingPublicMessage(message) {
+  if (!isPublicMessage(message)) return false;
+  const type = getMessageType(message);
+  return type === 1 || type === "outgoing";
 }
 
 function getMessageType(message) {
