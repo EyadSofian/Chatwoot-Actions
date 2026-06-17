@@ -1790,6 +1790,167 @@ test("handleDepartmentRouterWebhook detects a legacy resolved reopen from conver
   }
 });
 
+test("handleDepartmentRouterWebhook still detects a resolved reopen after several customer follow-ups", async () => {
+  const assignments = [];
+  const outgoingMessages = [];
+  let customAttributesBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: {},
+        messages: [
+          { id: 1, message_type: 1, sender_type: "User", content: "Old reply", created_at: 100 },
+          {
+            id: 2,
+            message_type: 2,
+            content_type: "activity",
+            content: "Conversation was marked resolved by Abdelrman Adel",
+            created_at: 200
+          },
+          { id: 97, message_type: 0, sender_type: "Contact", content: "السلام عليكم", created_at: 300 },
+          { id: 98, message_type: 0, sender_type: "Contact", content: "اقعد احاول ادخل", created_at: 310 },
+          { id: 99, message_type: 0, sender_type: "Contact", content: "يقول البيانات لا تتطابق", created_at: 320 }
+        ],
+        meta: {
+          sender: { id: 10, name: "Returning Customer" },
+          assignee: { id: 21, name: "Abdelrman Adel", availability_status: "offline" },
+          inbox: { id: 2, name: "WhatsApp" }
+        }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignments.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 701 }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    // The third customer follow-up after the resolve. The previous customer
+    // messages must not cancel reopen detection, and the offline previous agent
+    // must be released instead of keeping the conversation locked to them.
+    const incoming = reopenPayload();
+    incoming.message.content = "يقول البيانات لا تتطابق";
+    incoming.message.created_at = 320;
+
+    const result = await handleDepartmentRouterWebhook(incoming, {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      promptOnResolved: true,
+      stateStore: createMemoryDepartmentStateStore(),
+      audit: false
+    });
+
+    assert.equal(result.action, "department_prompt_sent");
+    assert.equal(result.reason, "resolved_conversation_reopened");
+    assert.deepEqual(assignments, [{ assignee_id: null }]);
+    assert.equal(outgoingMessages.length, 1);
+    assert.match(outgoingMessages[0].content, /اضغط 1/);
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "pending");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleDepartmentRouterWebhook leaves a reopen alone once the agent has replied after the resolve", async () => {
+  const writes = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: {},
+        messages: [
+          {
+            id: 2,
+            message_type: 2,
+            content_type: "activity",
+            content: "Conversation was marked resolved by Abdelrman Adel",
+            created_at: 200
+          },
+          { id: 97, message_type: 0, sender_type: "Contact", content: "السلام عليكم", created_at: 300 },
+          { id: 98, message_type: 1, sender_type: "User", content: "أهلا بك", created_at: 305 },
+          { id: 99, message_type: 0, sender_type: "Contact", content: "عندي سؤال", created_at: 320 }
+        ],
+        meta: {
+          sender: { id: 10, name: "Returning Customer" },
+          assignee: { id: 21, name: "Abdelrman Adel", availability_status: "offline" },
+          inbox: { id: 2, name: "WhatsApp" }
+        }
+      }));
+      return;
+    }
+
+    writes.push(url.pathname);
+    res.end(JSON.stringify({ ok: true }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const incoming = reopenPayload();
+    incoming.message.content = "عندي سؤال";
+    incoming.message.created_at = 320;
+
+    const result = await handleDepartmentRouterWebhook(incoming, {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      promptOnResolved: true,
+      stateStore: createMemoryDepartmentStateStore(),
+      audit: false
+    });
+
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "manual_assignment_active");
+    assert.equal(writes.length, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("handleDepartmentRouterWebhook restores automated ownership from Chatwoot after local state is lost", async () => {
   const assignmentBodies = [];
   const server = createServer(async (req, res) => {
