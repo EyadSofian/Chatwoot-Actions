@@ -3,7 +3,16 @@ import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
-import { appendAudit, appendWebhookEvent, createCampaign, readCollection, updateCampaignFromWebhook } from "./store.js";
+import {
+  appendAudit,
+  appendWebhookEvent,
+  createCampaign,
+  readAutomationSettings,
+  readCollection,
+  updateCampaignFromWebhook,
+  writeAutomationSettings
+} from "./store.js";
+import { mergeAutomationSettings, normalizeAutomationSettings } from "./automationSettings.js";
 import { toCsv } from "./exporters.js";
 import { verifyChatwootWebhookSignature } from "./webhookSecurity.js";
 import {
@@ -168,6 +177,26 @@ async function route(req, res) {
   if (req.method === "POST" && url.pathname === "/api/conversations/open-report") {
     const body = await readJsonBody(req);
     return sendJson(res, 200, await getOpenConversationReport(body.connection, body.criteria));
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/automation-settings") {
+    const saved = await readAutomationSettings();
+    return sendJson(res, 200, {
+      settings: mergeAutomationSettings(saved),
+      saved: Boolean(saved?.updatedAt),
+      updatedAt: saved?.updatedAt || null
+    });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/automation-settings") {
+    const body = await readJsonBody(req);
+    const settings = normalizeAutomationSettings(body.settings || {});
+    const saved = await writeAutomationSettings(settings, body.actor || null);
+    return sendJson(res, 200, {
+      settings: mergeAutomationSettings(saved),
+      saved: true,
+      updatedAt: saved.updatedAt
+    });
   }
 
   if (req.method === "POST" && url.pathname === "/api/chatwoot/audit") {

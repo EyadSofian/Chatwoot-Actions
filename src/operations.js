@@ -1,5 +1,6 @@
 import { ChatwootClient, buildFilterPayload, getMeta, getPayload } from "./chatwootClient.js";
-import { appendAudit, getDepartmentRoute, saveDepartmentRoute, saveJob } from "./store.js";
+import { automationSettingsToRouterOptions } from "./automationSettings.js";
+import { appendAudit, getDepartmentRoute, readAutomationSettings, saveDepartmentRoute, saveJob } from "./store.js";
 
 const DEFAULT_STATUSES = ["open", "pending", "resolved", "snoozed"];
 const REOPEN_ROUTER_DEFAULT_UNAVAILABLE = ["offline", "busy", "away", "unavailable", "missing"];
@@ -464,7 +465,10 @@ export async function getOpenConversationReport(connection, criteria = {}) {
 }
 
 export async function handleDepartmentRouterWebhook(payload = {}, options = {}) {
-  const config = buildDepartmentRouterConfig(options);
+  const config = buildDepartmentRouterConfig({
+    ...await loadSavedRouterOptions("department", options),
+    ...options
+  });
   if (!config.enabled) return { ok: true, handled: false, skipped: true, reason: "department_router_disabled" };
 
   const eventName = String(payload.event || payload.name || "").toLowerCase();
@@ -628,7 +632,10 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
     const handlerAutoAssignedAgentId = getSavedAutoAssignedAgentId(conversation, localRoute);
     const humanAssigned = getSavedManualAssignment(conversation, localRoute) ||
       (Boolean(handlerAssigneeId) && String(handlerAssigneeId) !== (handlerAutoAssignedAgentId || ""));
-    if (humanAssigned) {
+    const unavailableManualRelease = humanAssigned
+      ? getUnavailableManualAssignmentRelease(conversation, config)
+      : null;
+    if (humanAssigned && !unavailableManualRelease) {
       if (localRoute?.manualAssignment !== true) {
         await config.stateStore.save(conversationId, { manualAssignment: true });
       }
@@ -697,6 +704,16 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
       return registration;
     }
 
+    if (unavailableManualRelease) {
+      return handleUnavailableManualAssignmentFallback(
+        client,
+        conversation,
+        config,
+        unavailableManualRelease,
+        "unavailable_manual_assignment"
+      );
+    }
+
     return {
       ok: true,
       handled: true,
@@ -750,12 +767,33 @@ function buildDepartmentRouterConfig(options = {}) {
     complaintAgentId: String(options.complaintAgentId ?? process.env.DEPARTMENT_ROUTER_COMPLAINT_AGENT_ID ?? "").trim(),
     complaintAgentEmail: String(options.complaintAgentEmail ?? process.env.DEPARTMENT_ROUTER_COMPLAINT_AGENT_EMAIL ?? "").trim().toLowerCase(),
     complaintAgentName: String(options.complaintAgentName ?? process.env.DEPARTMENT_ROUTER_COMPLAINT_AGENT_NAME ?? DEFAULT_COMPLAINT_AGENT_NAME).trim(),
+    reassignUnavailableManualAssignments: parseBooleanOption(
+      options.reassignUnavailableManualAssignments ?? options.rerouteUnavailableManualAssignments,
+      process.env.DEPARTMENT_ROUTER_REROUTE_UNAVAILABLE_MANUAL_ASSIGNMENTS,
+      false
+    ),
+    manualAssignmentUnavailableStatuses: parseListOption(
+      options.manualAssignmentUnavailableStatuses,
+      process.env.DEPARTMENT_ROUTER_MANUAL_ASSIGNMENT_UNAVAILABLE_STATUSES,
+      REOPEN_ROUTER_DEFAULT_UNAVAILABLE
+    ).map(value => String(value).toLowerCase()),
+    unavailableManualFallback: String(
+      options.unavailableManualFallback ?? process.env.DEPARTMENT_ROUTER_UNAVAILABLE_MANUAL_FALLBACK ?? "unassign"
+    ).toLowerCase(),
     stateStore: options.stateStore || {
       get: getDepartmentRoute,
       save: saveDepartmentRoute
     },
     audit: options.audit !== false
   };
+}
+
+async function loadSavedRouterOptions(routerName, options = {}) {
+  if (options.useSavedSettings === false || options.enabled !== undefined) return {};
+  const saved = await readAutomationSettings();
+  if (!saved) return {};
+  const routerOptions = automationSettingsToRouterOptions(saved);
+  return routerOptions[routerName] || {};
 }
 
 const WEEKDAY_INDEX = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
@@ -1174,38 +1212,55 @@ async function routeConversationToDepartment(
   const currentAssigneeId = getConversationAssigneeId(conversation);
   const autoAssignedAgentId = getSavedAutoAssignedAgentId(conversation, localRoute);
 
-  // Respect manual assignments. A human moved this conversation if it currently
-  // has an assignee that the router did not assign itself. Once locked, the
-  // router never reassigns it again, even when that agent is offline.
+  // Respect manual assignments unless the operator explicitly allows the router
+  // to release unavailable assignees back to the configured routing flow.
   const manuallyLocked = !allowReassignment && (
     getSavedManualAssignment(conversation, localRoute) ||
     (Boolean(currentAssigneeId) && String(currentAssigneeId) !== (autoAssignedAgentId || ""))
   );
 
   if (manuallyLocked) {
-    const updatedAttributes = await persistDepartmentState(client, conversation, config, {
-      [DEPARTMENT_ATTRIBUTES.department]: department,
-      [DEPARTMENT_ATTRIBUTES.state]: "routed",
-      [DEPARTMENT_ATTRIBUTES.teamId]: Number(teamId),
-      [DEPARTMENT_ATTRIBUTES.promptNext]: false,
-      [DEPARTMENT_ATTRIBUTES.routedAt]: new Date().toISOString(),
-      [DEPARTMENT_ATTRIBUTES.autoAssignedAgentId]: null,
-      [DEPARTMENT_ATTRIBUTES.manualAssignment]: true
-    });
-    const details = {
-      conversationId,
-      inboxId,
-      department,
-      teamId: Number(teamId),
-      fromAgentId: currentAssigneeId || null,
-      toAgentId: currentAssigneeId || null,
-      toAgentName: getAgentName(getConversationAssignee(conversation)),
-      reason,
-      manual: true,
-      updatedAttributes
-    };
-    await auditDepartmentRouter("department_router_kept_manual_assignment", details, config.audit);
-    return { ok: true, handled: true, action: "kept_manual_assignment", ...details };
+    const unavailableManualRelease = getUnavailableManualAssignmentRelease(conversation, config);
+    if (unavailableManualRelease) {
+      await config.stateStore.save(conversationId, {
+        manualAssignment: false,
+        autoAssignedAgentId: null
+      });
+      await auditDepartmentRouter("department_router_released_unavailable_manual_assignment", {
+        conversationId,
+        inboxId,
+        department,
+        teamId: Number(teamId),
+        fromAgentId: unavailableManualRelease.assigneeId,
+        fromAgentName: unavailableManualRelease.assigneeName,
+        fromAgentStatus: unavailableManualRelease.assigneeStatus,
+        reason
+      }, config.audit);
+    } else {
+      const updatedAttributes = await persistDepartmentState(client, conversation, config, {
+        [DEPARTMENT_ATTRIBUTES.department]: department,
+        [DEPARTMENT_ATTRIBUTES.state]: "routed",
+        [DEPARTMENT_ATTRIBUTES.teamId]: Number(teamId),
+        [DEPARTMENT_ATTRIBUTES.promptNext]: false,
+        [DEPARTMENT_ATTRIBUTES.routedAt]: new Date().toISOString(),
+        [DEPARTMENT_ATTRIBUTES.autoAssignedAgentId]: null,
+        [DEPARTMENT_ATTRIBUTES.manualAssignment]: true
+      });
+      const details = {
+        conversationId,
+        inboxId,
+        department,
+        teamId: Number(teamId),
+        fromAgentId: currentAssigneeId || null,
+        toAgentId: currentAssigneeId || null,
+        toAgentName: getAgentName(getConversationAssignee(conversation)),
+        reason,
+        manual: true,
+        updatedAttributes
+      };
+      await auditDepartmentRouter("department_router_kept_manual_assignment", details, config.audit);
+      return { ok: true, handled: true, action: "kept_manual_assignment", ...details };
+    }
   }
 
   // Decide whether to assign a specific agent. When business hours are enabled,
@@ -1388,6 +1443,71 @@ async function routeComplaintToAgent(client, conversation, config, reason) {
   return { ok: true, handled: true, action, ...details, result: assignmentResult };
 }
 
+async function handleUnavailableManualAssignmentFallback(client, conversation, config, release, reason) {
+  const conversationId = conversation.id;
+  const inboxId = getConversationInboxId(conversation);
+  const fallback = config.unavailableManualFallback || "unassign";
+
+  await config.stateStore.save(conversationId, {
+    manualAssignment: false,
+    autoAssignedAgentId: null
+  });
+
+  if (fallback === "prompt") {
+    await auditDepartmentRouter("department_router_unavailable_manual_prompted", {
+      conversationId,
+      inboxId,
+      fromAgentId: release.assigneeId,
+      fromAgentName: release.assigneeName,
+      fromAgentStatus: release.assigneeStatus,
+      reason
+    }, config.audit);
+    return promptForDepartment(client, conversation, config, { reason, force: true });
+  }
+
+  if (fallback === "ignore") {
+    await auditDepartmentRouter("department_router_unavailable_manual_ignored", {
+      conversationId,
+      inboxId,
+      fromAgentId: release.assigneeId,
+      fromAgentName: release.assigneeName,
+      fromAgentStatus: release.assigneeStatus,
+      reason
+    }, config.audit);
+    return {
+      ok: true,
+      handled: true,
+      skipped: true,
+      reason: "unavailable_manual_assignment_ignored",
+      conversationId,
+      inboxId,
+      assigneeId: release.assigneeId,
+      assigneeStatus: release.assigneeStatus
+    };
+  }
+
+  let result = null;
+  if (getConversationAssigneeId(conversation)) {
+    result = await client.assignConversation(conversationId, { assignee_id: null });
+  }
+  const details = {
+    conversationId,
+    inboxId,
+    fromAgentId: release.assigneeId,
+    fromAgentName: release.assigneeName,
+    fromAgentStatus: release.assigneeStatus,
+    reason
+  };
+  await auditDepartmentRouter("department_router_unavailable_manual_unassigned", details, config.audit);
+  return {
+    ok: true,
+    handled: true,
+    action: "unavailable_manual_unassigned",
+    ...details,
+    result
+  };
+}
+
 async function resolveComplaintAgent(client, config) {
   if (config.complaintAgentId) return { id: Number(config.complaintAgentId), name: config.complaintAgentName };
 
@@ -1491,6 +1611,23 @@ function getSavedManualAssignment(conversation, localRoute = null) {
     undefined,
     false
   );
+}
+
+function getUnavailableManualAssignmentRelease(conversation, config) {
+  if (!config.reassignUnavailableManualAssignments) return null;
+  const assigneeId = getConversationAssigneeId(conversation);
+  if (!assigneeId) return null;
+
+  const assignee = getConversationAssignee(conversation);
+  const assigneeStatus = getAgentAvailability(assignee, "missing");
+  const unavailableStatuses = config.manualAssignmentUnavailableStatuses || REOPEN_ROUTER_DEFAULT_UNAVAILABLE;
+  if (!unavailableStatuses.includes(String(assigneeStatus).toLowerCase())) return null;
+
+  return {
+    assigneeId,
+    assigneeName: getAgentName(assignee),
+    assigneeStatus
+  };
 }
 
 function getWebhookConversationStatus(payload, conversation) {
@@ -1653,7 +1790,10 @@ async function withDepartmentRouterLock(conversationId, worker) {
 }
 
 export async function handleReopenRouterWebhook(payload = {}, options = {}) {
-  const config = buildReopenRouterConfig(options);
+  const config = buildReopenRouterConfig({
+    ...await loadSavedRouterOptions("reopen", options),
+    ...options
+  });
   if (!config.enabled) return { ok: true, skipped: true, reason: "disabled" };
 
   const eventName = String(payload.event || payload.name || "").toLowerCase();

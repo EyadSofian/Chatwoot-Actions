@@ -60,6 +60,21 @@ If you want local audit logs, bulk job history, webhook events, and campaign cou
 
 Use `/api/health` as the healthcheck path.
 
+## Automation tab
+
+The Chatwoot Dashboard App includes an **Automation** tab. Admins can change the Department Router and Reopen Router without redeploying Railway:
+
+- chatbot/menu text and confirmation messages
+- enabled inboxes
+- Sales and Operations teams
+- allowed agents for each route
+- business hours
+- campaign skipping
+- fallback behavior when no online agent is available
+- whether an offline/busy/away manually assigned agent should be released
+
+Saved settings live in `DATA_DIR/automation-settings.json` and override the matching Railway environment variables. If no settings were saved yet, the app shows the Railway defaults. Keep a Railway Volume attached if these settings must survive redeploys.
+
 ## Chatwoot setup
 
 1. Create or copy a user access token from Chatwoot profile settings.
@@ -137,6 +152,9 @@ DEPARTMENT_ROUTER_CONFIRM_SELECTION=true
 DEPARTMENT_ROUTER_SKIP_CAMPAIGNS=true
 DEPARTMENT_ROUTER_ASSIGN_AGENT=true
 DEPARTMENT_ROUTER_SALES_ASSIGNMENT_MODE=online
+DEPARTMENT_ROUTER_REROUTE_UNAVAILABLE_MANUAL_ASSIGNMENTS=false
+DEPARTMENT_ROUTER_MANUAL_ASSIGNMENT_UNAVAILABLE_STATUSES=offline,busy,away,unavailable,missing
+DEPARTMENT_ROUTER_UNAVAILABLE_MANUAL_FALLBACK=unassign
 DEPARTMENT_ROUTER_COMPLAINT_AGENT_NAME=Abdelrahman Tarek
 # Or set the exact Chatwoot user id to avoid name matching:
 # DEPARTMENT_ROUTER_COMPLAINT_AGENT_ID=123
@@ -194,6 +212,7 @@ Behavior:
 - Complaints / option `3`: first send the complaint warning and ask the customer to confirm. If they reply `1`, route them to Trainee Support. If they reply `2`, ask for complaint details, send the received confirmation, and assign to `DEPARTMENT_ROUTER_COMPLAINT_AGENT_ID`, `DEPARTMENT_ROUTER_COMPLAINT_AGENT_EMAIL`, or `DEPARTMENT_ROUTER_COMPLAINT_AGENT_NAME` even if that person is offline.
 - The router only reacts to public incoming customer messages. Agent/user outgoing messages are ignored even when the conversation is waiting for the first customer reply.
 - A human agent handling the conversation wins. If the conversation currently has an assignee that the router did not assign itself, the router leaves it completely alone — no menu, no unassign, no reroute — even when that agent is offline. This includes the new-contact first-message flow, so an agent who self-assigns before the customer replies will not be interrupted.
+- If `DEPARTMENT_ROUTER_REROUTE_UNAVAILABLE_MANUAL_ASSIGNMENTS=true`, that manual protection is relaxed only when the current assignee's status is in `DEPARTMENT_ROUTER_MANUAL_ASSIGNMENT_UNAVAILABLE_STATUSES`. Known Sales/Operations conversations are routed to an eligible online agent in the same department. Unknown conversations use `DEPARTMENT_ROUTER_UNAVAILABLE_MANUAL_FALLBACK`: `unassign`, `prompt`, or `ignore`.
 - Resolving always releases the manual lock so the next customer message can enter the menu flow again.
 - Old open conversation already assigned to an agent: left alone (see above). The router only moves an agent it assigned itself when that agent is no longer an eligible online team/inbox member; a human-assigned agent is never moved.
 - A reopened conversation whose old `conversation_status_changed` webhook was missed is detected from the latest resolved activity in its Chatwoot message history. The old assignee is cleared and the department menu is shown. The customer's own follow-up messages after the resolve do not cancel this detection — only an agent reply sent after the resolve marks the conversation as actively handled again, so a customer who sends several messages to a resolved conversation still reaches the menu instead of staying locked to the previous (often offline) agent.

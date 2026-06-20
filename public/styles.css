@@ -628,6 +628,10 @@ th {
   padding: 8px;
 }
 
+.check-list.no-max {
+  max-height: none;
+}
+
 .check-row {
   display: flex;
   align-items: center;

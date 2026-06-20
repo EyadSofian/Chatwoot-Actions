@@ -1147,6 +1147,98 @@ test("handleDepartmentRouterWebhook keeps a manual assignment even when that age
   }
 });
 
+test("handleDepartmentRouterWebhook reroutes unavailable manual assignees when enabled", async () => {
+  const assignmentBodies = [];
+  let customAttributesBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        team_id: 3,
+        custom_attributes: {},
+        meta: {
+          sender: { id: 10, name: "Ahmed" },
+          assignee: { id: 71, name: "Omar Mohsen", availability_status: "offline" },
+          team: { id: 3, name: "operations" },
+          inbox: { id: 2, name: "WhatsApp" }
+        }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/teams/3/team_members") {
+      res.end(JSON.stringify([
+        { id: 71, name: "Omar Mohsen", availability_status: "offline" },
+        { id: 21, name: "Abdelrman Adel", availability_status: "online" }
+      ]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/inbox_members/2") {
+      res.end(JSON.stringify({
+        payload: [
+          { id: 71, name: "Omar Mohsen", availability_status: "offline" },
+          { id: 21, name: "Abdelrman Adel", availability_status: "online" }
+        ]
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignmentBodies.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const stateStore = createMemoryDepartmentStateStore();
+    const payload = reopenPayload();
+    payload.message.content = "Ø§Ù„Ø³Ù„Ø§Ù… Ø¹Ù„ÙŠÙƒÙ…";
+    const result = await handleDepartmentRouterWebhook(payload, {
+      connection: {
+        baseUrl: `http://127.0.0.1:${port}`,
+        accountId: "1",
+        apiToken: "test-token"
+      },
+      enabled: true,
+      inboxIds: ["2"],
+      salesTeamId: "4",
+      operationsTeamId: "3",
+      operationsAgentIds: ["21", "71"],
+      reassignUnavailableManualAssignments: true,
+      stateStore,
+      audit: false
+    });
+
+    assert.equal(result.action, "department_assigned");
+    assert.equal(result.department, "operations");
+    assert.equal(result.fromAgentId, 71);
+    assert.equal(result.toAgentId, 21);
+    assert.deepEqual(assignmentBodies, [{ team_id: 3 }, { assignee_id: 21 }]);
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_auto_assigned_agent_id, "21");
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_manual_assignment, false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("handleDepartmentRouterWebhook waits for the first incoming message before prompting a new contact", async () => {
   let customAttributesBody = null;
   let assignmentBody = null;

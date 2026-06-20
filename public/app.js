@@ -15,6 +15,8 @@ const state = {
   audit: [],
   campaigns: [],
   webhooks: [],
+  automationSettings: defaultClientAutomationSettings(),
+  automationSettingsMeta: { saved: false, updatedAt: null },
   appContext: null,
   bulkCriteria: {
     scope: "conversations",
@@ -324,8 +326,81 @@ const translations = {
   }
 };
 
+Object.assign(translations.ar, {
+  "Automation": "الأتمتة",
+  "Configure chatbot routing, assignment windows, and allowed agents.": "اضبط رسائل البوت، مواعيد التعيين، والموظفين المسموح لهم.",
+  "Automation Control": "تحكم الأتمتة",
+  "These settings are used by the Chatwoot webhook without redeploying Railway.": "الإعدادات دي بيستخدمها Webhook من غير إعادة نشر Railway.",
+  "Load settings": "تحميل الإعدادات",
+  "Save automation settings": "حفظ إعدادات الأتمتة",
+  "Department router": "راوتر الأقسام",
+  "Enable department router": "تشغيل راوتر الأقسام",
+  "Prompt new conversations": "إرسال القائمة للمحادثات الجديدة",
+  "Prompt resolved conversations": "إرسال القائمة بعد إعادة فتح محادثة مغلقة",
+  "New contacts only": "عملاء جدد فقط",
+  "Skip campaigns": "تجاهل محادثات الحملات",
+  "Assign agent automatically": "تعيين موظف تلقائيا",
+  "Confirm customer selection": "تأكيد اختيار العميل",
+  "Move chats away from unavailable manual assignees": "سحب الشات من الموظف غير المتاح حتى لو التعيين يدوي",
+  "Manual fallback": "تصرف الشات غير المعروف",
+  "Unassign": "بدون تعيين",
+  "Send menu": "إرسال القائمة",
+  "Ignore": "تجاهل",
+  "Unavailable statuses": "حالات عدم التوفر",
+  "Choose routed inboxes": "اختار الإنبوكسات",
+  "Sales team": "فريق المبيعات",
+  "Operations team": "فريق العمليات",
+  "Allowed sales agents": "موظفين المبيعات المسموح لهم",
+  "Allowed operations agents": "موظفين العمليات المسموح لهم",
+  "Sales assignment mode": "طريقة تعيين المبيعات",
+  "Online only": "أونلاين فقط",
+  "Any status": "أي حالة",
+  "Business hours": "مواعيد العمل",
+  "Enable business hours": "تشغيل مواعيد العمل",
+  "Timezone": "المنطقة الزمنية",
+  "Start time": "وقت البداية",
+  "End time": "وقت النهاية",
+  "Working days": "أيام العمل",
+  "Sunday": "الأحد",
+  "Monday": "الإثنين",
+  "Tuesday": "الثلاثاء",
+  "Wednesday": "الأربعاء",
+  "Thursday": "الخميس",
+  "Friday": "الجمعة",
+  "Saturday": "السبت",
+  "Chatbot messages": "رسائل البوت",
+  "Main menu text": "نص القائمة الرئيسية",
+  "Sales confirmation": "رسالة تأكيد المبيعات",
+  "Operations confirmation": "رسالة تأكيد العمليات",
+  "Operations data prompt": "رسالة طلب بيانات العمليات",
+  "Complaint intro": "رسالة بداية الشكاوى",
+  "Complaint data prompt": "رسالة بيانات الشكوى",
+  "Complaint received text": "رسالة استلام الشكوى",
+  "Complaint owner": "مسؤول الشكاوى",
+  "Complaint agent ID": "ID مسؤول الشكاوى",
+  "Complaint agent email": "إيميل مسؤول الشكاوى",
+  "Complaint agent name": "اسم مسؤول الشكاوى",
+  "Reopen router": "راوتر إعادة الفتح",
+  "Enable reopen router": "تشغيل راوتر إعادة الفتح",
+  "Reopen team": "فريق إعادة الفتح",
+  "Allowed reopen agents": "موظفين إعادة الفتح المسموح لهم",
+  "Assign unassigned conversations": "تعيين المحادثات غير المعينة",
+  "Fallback": "التصرف الاحتياطي",
+  "Move to team": "تحويل لفريق",
+  "Do nothing": "بدون إجراء",
+  "Cooldown seconds": "فاصل التكرار بالثواني",
+  "Automation settings loaded.": "تم تحميل إعدادات الأتمتة.",
+  "Automation settings saved.": "تم حفظ إعدادات الأتمتة.",
+  "Saved settings": "إعدادات محفوظة",
+  "Environment defaults": "إعدادات من Railway",
+  "Last saved": "آخر حفظ",
+  "When enabled, the router can release an offline/busy/away manual assignee so customers do not wait on someone unavailable.": "عند تشغيله، يقدر الراوتر يسحب الشات من موظف offline/busy/away حتى لو التعيين كان يدوي.",
+  "Use this only for inboxes fully owned by this app. Keep Chatwoot auto assignment and automation rules disabled there.": "استخدم ده فقط للإنبوكسات اللي التطبيق مسؤول عنها بالكامل. لازم Auto assignment و Automations في Chatwoot تفضل مقفولة هناك."
+});
+
 const tabs = [
   ["actions", "Actions"],
+  ["automation", "Automation"],
   ["open_report", "Open Report"],
   ["phone_assign", "Phone Assign"],
   ["dashboard", "Dashboard"],
@@ -337,6 +412,7 @@ const tabs = [
 
 const titles = {
   actions: ["Actions", "Run bulk transfers safely in three steps: choose, preview, execute."],
+  automation: ["Automation", "Configure chatbot routing, assignment windows, and allowed agents."],
   open_report: ["Open Report", "Open conversations by inbox, unassigned queue, and selected agents."],
   phone_assign: ["Phone Assign", "Assign open conversations by uploaded or pasted phone numbers."],
   dashboard: ["Dashboard", "Counters, report snapshots, and Chatwoot embedded context."],
@@ -383,6 +459,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("refresh-button").addEventListener("click", refreshActiveTab);
   render();
   refreshBaseData();
+  loadAutomationSettings({ quiet: true }).catch(error => notify(error.message || "Request failed", "bad"));
 });
 
 function renderNav() {
@@ -412,6 +489,7 @@ function render() {
 
   const view = document.getElementById("view");
   if (state.tab === "actions") view.innerHTML = actionsView();
+  if (state.tab === "automation") view.innerHTML = automationView();
   if (state.tab === "open_report") view.innerHTML = openReportView();
   if (state.tab === "phone_assign") view.innerHTML = phoneAssignView();
   if (state.tab === "dashboard") view.innerHTML = dashboardView();
@@ -484,6 +562,127 @@ function actionsView() {
         ${state.preview ? `<span class="pill warn">${state.preview.count} ${tr("rows")}</span>` : ""}
       </div>
       <div class="panel-body">${previewTable()}</div>
+    </section>
+  `;
+}
+
+function automationView() {
+  const settings = state.automationSettings || defaultClientAutomationSettings();
+  const department = settings.department || {};
+  const reopen = settings.reopen || {};
+  const meta = state.automationSettingsMeta || {};
+  return `
+    ${embeddedBanner()}
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>${tr("Automation Control")}</h2>
+          <p class="panel-note">${tr("These settings are used by the Chatwoot webhook without redeploying Railway.")}</p>
+        </div>
+        <span class="pill ${meta.saved ? "ok" : "warn"}">${tr(meta.saved ? "Saved settings" : "Environment defaults")}</span>
+      </div>
+      <div class="panel-body">
+        <p class="notice warn">${tr("Use this only for inboxes fully owned by this app. Keep Chatwoot auto assignment and automation rules disabled there.")}</p>
+        ${meta.updatedAt ? `<p class="notice">${tr("Last saved")}: ${escapeHtml(meta.updatedAt)}</p>` : ""}
+        <div class="actions">
+          <button class="button secondary" data-action="load-automation-settings">${tr("Load settings")}</button>
+          <button class="button" data-action="save-automation-settings">${tr("Save automation settings")}</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>${tr("Department router")}</h2></div>
+      <div class="panel-body">
+        <div class="grid two">
+          ${checkboxPanel([
+            ["automationDepartmentEnabled", "Enable department router", department.enabled],
+            ["automationPromptOnNew", "Prompt new conversations", department.promptOnNew],
+            ["automationPromptOnResolved", "Prompt resolved conversations", department.promptOnResolved],
+            ["automationNewContactsOnly", "New contacts only", department.newContactsOnly],
+            ["automationSkipCampaigns", "Skip campaigns", department.skipCampaigns],
+            ["automationAssignAgent", "Assign agent automatically", department.assignAgent],
+            ["automationConfirmSelection", "Confirm customer selection", department.confirmSelection],
+            ["automationRerouteUnavailableManual", "Move chats away from unavailable manual assignees", department.rerouteUnavailableManualAssignments]
+          ])}
+          <div>
+            ${checkboxGroup("automationInboxIds", "Choose routed inboxes", state.inboxes.map(inbox => [inbox.id, `${inbox.name} (${inbox.channel_type || inbox.channelType || "inbox"})`]), department.inboxIds)}
+            <p class="notice">${tr("When enabled, the router can release an offline/busy/away manual assignee so customers do not wait on someone unavailable.")}</p>
+          </div>
+        </div>
+        <div class="form-grid span-all">
+          ${teamSelect("automationSalesTeamId", "Sales team", department.salesTeamId)}
+          ${teamSelect("automationOperationsTeamId", "Operations team", department.operationsTeamId)}
+          ${selectField("automationSalesAssignmentMode", "Sales assignment mode", [["online", "Online only"], ["any_status", "Any status"]], department.salesAssignmentMode || "online")}
+          ${selectField("automationUnavailableManualFallback", "Manual fallback", [["unassign", "Unassign"], ["prompt", "Send menu"], ["ignore", "Ignore"]], department.unavailableManualFallback || "unassign")}
+          ${inputField("automationManualUnavailableStatuses", "Unavailable statuses", (department.manualAssignmentUnavailableStatuses || []).join(","))}
+        </div>
+        <div class="grid two" style="margin-top:14px">
+          ${checkboxGroup("automationSalesAgentIds", "Allowed sales agents", state.agents.map(agent => [agent.id, `${agent.name} (${agent.email || agent.availability_status || ""})`]), department.salesAgentIds)}
+          ${checkboxGroup("automationOperationsAgentIds", "Allowed operations agents", state.agents.map(agent => [agent.id, `${agent.name} (${agent.email || agent.availability_status || ""})`]), department.operationsAgentIds)}
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>${tr("Business hours")}</h2></div>
+      <div class="panel-body">
+        <label class="field checkbox-field">
+          <span><input type="checkbox" id="automationBusinessHoursEnabled" ${department.businessHoursEnabled ? "checked" : ""}> ${tr("Enable business hours")}</span>
+        </label>
+        <div class="form-grid">
+          ${inputField("automationBusinessTimezone", "Timezone", department.businessTimezone || "Africa/Cairo")}
+          ${inputField("automationBusinessStart", "Start time", department.businessStart || "09:00")}
+          ${inputField("automationBusinessEnd", "End time", department.businessEnd || "22:00")}
+        </div>
+        <div class="span-all">${dayCheckboxGroup("automationBusinessDays", "Working days", department.businessDays || [])}</div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>${tr("Chatbot messages")}</h2></div>
+      <div class="panel-body">
+        <div class="form-grid">
+          ${textareaField("automationPromptText", "Main menu text", department.promptText)}
+          ${textareaField("automationOperationsDataPromptText", "Operations data prompt", department.operationsDataPromptText)}
+          ${textareaField("automationSalesConfirmationText", "Sales confirmation", department.salesConfirmationText)}
+          ${textareaField("automationOperationsConfirmationText", "Operations confirmation", department.operationsConfirmationText)}
+          ${textareaField("automationComplaintIntroText", "Complaint intro", department.complaintIntroText)}
+          ${textareaField("automationComplaintDataPromptText", "Complaint data prompt", department.complaintDataPromptText)}
+          ${textareaField("automationComplaintReceivedText", "Complaint received text", department.complaintReceivedText)}
+        </div>
+        <h3>${tr("Complaint owner")}</h3>
+        <div class="form-grid">
+          ${inputField("automationComplaintAgentId", "Complaint agent ID", department.complaintAgentId || "")}
+          ${inputField("automationComplaintAgentEmail", "Complaint agent email", department.complaintAgentEmail || "")}
+          ${inputField("automationComplaintAgentName", "Complaint agent name", department.complaintAgentName || "Abdelrahman Tarek")}
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>${tr("Reopen router")}</h2></div>
+      <div class="panel-body">
+        <label class="field checkbox-field">
+          <span><input type="checkbox" id="automationReopenEnabled" ${reopen.enabled ? "checked" : ""}> ${tr("Enable reopen router")}</span>
+        </label>
+        <div class="grid two">
+          ${checkboxGroup("automationReopenInboxIds", "Choose routed inboxes", state.inboxes.map(inbox => [inbox.id, `${inbox.name} (${inbox.channel_type || inbox.channelType || "inbox"})`]), reopen.inboxIds)}
+          ${checkboxGroup("automationReopenAgentIds", "Allowed reopen agents", state.agents.map(agent => [agent.id, `${agent.name} (${agent.email || agent.availability_status || ""})`]), reopen.agentIds)}
+        </div>
+        <div class="form-grid span-all">
+          ${teamSelect("automationReopenTeamId", "Reopen team", reopen.teamId)}
+          ${selectField("automationReopenFallback", "Fallback", [["unassign", "Unassign"], ["team", "Move to team"], ["none", "Do nothing"]], reopen.fallback || "unassign")}
+          ${inputField("automationReopenStatuses", "Unavailable statuses", (reopen.unavailableStatuses || []).join(","))}
+          ${inputField("automationReopenCooldown", "Cooldown seconds", reopen.cooldownSeconds || "60", "number")}
+        </div>
+        <label class="field checkbox-field">
+          <span><input type="checkbox" id="automationReopenAssignUnassigned" ${reopen.assignUnassigned ? "checked" : ""}> ${tr("Assign unassigned conversations")}</span>
+        </label>
+        <label class="field checkbox-field">
+          <span><input type="checkbox" id="automationReopenSkipCampaigns" ${reopen.skipCampaigns ? "checked" : ""}> ${tr("Skip campaigns")}</span>
+        </label>
+      </div>
     </section>
   `;
 }
@@ -926,6 +1125,8 @@ function bindViewEvents() {
 async function runAction(action) {
   if (action === "save-settings") return saveSettings();
   if (action === "clear-settings") return clearSettings();
+  if (action === "load-automation-settings") return loadAutomationSettings();
+  if (action === "save-automation-settings") return saveAutomationSettings();
   if (action === "preview-bulk") return previewBulk();
   if (action === "execute-bulk") return executeBulk();
   if (action === "load-open-report") return loadOpenReport();
@@ -955,8 +1156,84 @@ async function refreshBaseData() {
   }
 }
 
+async function loadAutomationSettings({ quiet = false } = {}) {
+  const data = await getJson("/api/automation-settings");
+  state.automationSettings = data.settings || defaultClientAutomationSettings();
+  state.automationSettingsMeta = {
+    saved: Boolean(data.saved),
+    updatedAt: data.updatedAt || null
+  };
+  render();
+  if (!quiet) notify(tr("Automation settings loaded."), "ok");
+}
+
+async function saveAutomationSettings() {
+  const actor = state.appContext?.currentAgent || { name: state.connection.operatorName || "Ops Admin" };
+  const data = await api("/api/automation-settings", {
+    settings: getAutomationSettingsFromForm(),
+    actor
+  });
+  state.automationSettings = data.settings || defaultClientAutomationSettings();
+  state.automationSettingsMeta = {
+    saved: Boolean(data.saved),
+    updatedAt: data.updatedAt || null
+  };
+  render();
+  notify(tr("Automation settings saved."), "ok");
+}
+
+function getAutomationSettingsFromForm() {
+  return {
+    department: {
+      enabled: checked("automationDepartmentEnabled"),
+      inboxIds: checkedValues("automationInboxIds"),
+      salesTeamId: value("automationSalesTeamId"),
+      operationsTeamId: value("automationOperationsTeamId"),
+      salesAgentIds: checkedValues("automationSalesAgentIds"),
+      operationsAgentIds: checkedValues("automationOperationsAgentIds"),
+      promptOnNew: checked("automationPromptOnNew"),
+      promptOnResolved: checked("automationPromptOnResolved"),
+      newContactsOnly: checked("automationNewContactsOnly"),
+      skipCampaigns: checked("automationSkipCampaigns"),
+      assignAgent: checked("automationAssignAgent"),
+      confirmSelection: checked("automationConfirmSelection"),
+      businessHoursEnabled: checked("automationBusinessHoursEnabled"),
+      businessTimezone: value("automationBusinessTimezone"),
+      businessStart: value("automationBusinessStart"),
+      businessEnd: value("automationBusinessEnd"),
+      businessDays: checkedValues("automationBusinessDays"),
+      salesAssignmentMode: value("automationSalesAssignmentMode"),
+      complaintAgentId: value("automationComplaintAgentId"),
+      complaintAgentEmail: value("automationComplaintAgentEmail"),
+      complaintAgentName: value("automationComplaintAgentName"),
+      promptText: value("automationPromptText"),
+      salesConfirmationText: value("automationSalesConfirmationText"),
+      operationsConfirmationText: value("automationOperationsConfirmationText"),
+      operationsDataPromptText: value("automationOperationsDataPromptText"),
+      complaintIntroText: value("automationComplaintIntroText"),
+      complaintDataPromptText: value("automationComplaintDataPromptText"),
+      complaintReceivedText: value("automationComplaintReceivedText"),
+      rerouteUnavailableManualAssignments: checked("automationRerouteUnavailableManual"),
+      manualAssignmentUnavailableStatuses: listValue("automationManualUnavailableStatuses"),
+      unavailableManualFallback: value("automationUnavailableManualFallback")
+    },
+    reopen: {
+      enabled: checked("automationReopenEnabled"),
+      inboxIds: checkedValues("automationReopenInboxIds"),
+      teamId: value("automationReopenTeamId"),
+      agentIds: checkedValues("automationReopenAgentIds"),
+      unavailableStatuses: listValue("automationReopenStatuses"),
+      fallback: value("automationReopenFallback"),
+      assignUnassigned: checked("automationReopenAssignUnassigned"),
+      cooldownSeconds: Number(value("automationReopenCooldown") || 60),
+      skipCampaigns: checked("automationReopenSkipCampaigns")
+    }
+  };
+}
+
 async function refreshActiveTab() {
   if (state.tab === "open_report") return loadOpenReport();
+  if (state.tab === "automation") return loadAutomationSettings();
   if (state.tab === "dashboard") return loadReports();
   if (state.tab === "audit") return loadAudit();
   if (state.tab === "campaigns") return Promise.all([loadCampaigns(), loadWebhooks()]);
@@ -1470,6 +1747,11 @@ function inputField(id, label, defaultValue = "", type = "text") {
   return `<label class="field" for="${id}"><span>${tr(label)}</span><input id="${id}" type="${type}" value="${escapeHtml(translatedDefault)}"></label>`;
 }
 
+function textareaField(id, label, defaultValue = "") {
+  const translatedDefault = state.lang === "ar" ? tr(defaultValue || "") : (defaultValue || "");
+  return `<label class="field" for="${id}"><span>${tr(label)}</span><textarea id="${id}" rows="5">${escapeHtml(translatedDefault)}</textarea></label>`;
+}
+
 function selectField(id, label, options, selected = "") {
   return `<label class="field" for="${id}"><span>${tr(label)}</span><select id="${id}">${options.map(([value, text]) => `<option value="${value}" ${String(value) === String(selected || "") ? "selected" : ""}>${tr(text)}</option>`).join("")}</select></label>`;
 }
@@ -1487,6 +1769,33 @@ function teamSelect(id, label, selected = "") {
 function inboxSelect(id, label, selected = "") {
   const options = [["", "All inboxes"], ...state.inboxes.map(inbox => [inbox.id, `${inbox.name} (${inbox.channel_type || inbox.channelType || "inbox"})`])];
   return selectField(id, label, options, selected);
+}
+
+function checkboxPanel(items) {
+  return `
+    <section class="check-panel">
+      <div class="check-list no-max">
+        ${items.map(([id, label, isChecked]) => `
+          <label class="check-row">
+            <input id="${id}" type="checkbox" ${isChecked ? "checked" : ""}>
+            <span>${tr(label)}</span>
+          </label>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function dayCheckboxGroup(name, label, selected = []) {
+  return checkboxGroup(name, label, [
+    ["0", "Sunday"],
+    ["1", "Monday"],
+    ["2", "Tuesday"],
+    ["3", "Wednesday"],
+    ["4", "Thursday"],
+    ["5", "Friday"],
+    ["6", "Saturday"]
+  ], selected);
 }
 
 async function api(path, body) {
@@ -1523,8 +1832,68 @@ function value(id) {
   return document.getElementById(id)?.value || "";
 }
 
+function checked(id) {
+  return Boolean(document.getElementById(id)?.checked);
+}
+
 function checkedValues(name) {
   return [...document.querySelectorAll(`input[name="${name}"]:checked`)].map(input => input.value);
+}
+
+function listValue(id) {
+  return value(id)
+    .split(/[,\s]+/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function defaultClientAutomationSettings() {
+  return {
+    department: {
+      enabled: false,
+      inboxIds: [],
+      salesTeamId: "",
+      operationsTeamId: "",
+      salesAgentIds: [],
+      operationsAgentIds: [],
+      promptOnNew: true,
+      promptOnResolved: true,
+      newContactsOnly: true,
+      skipCampaigns: true,
+      assignAgent: true,
+      confirmSelection: true,
+      businessHoursEnabled: false,
+      businessTimezone: "Africa/Cairo",
+      businessStart: "09:00",
+      businessEnd: "22:00",
+      businessDays: ["0", "1", "2", "3", "4", "5", "6"],
+      salesAssignmentMode: "online",
+      complaintAgentId: "",
+      complaintAgentEmail: "",
+      complaintAgentName: "Abdelrahman Tarek",
+      promptText: "للمبيعات و العروض الجديدة اضغط 1\nلدعم المتدربين اضغط 2\nللشكاوي اضغط 3",
+      salesConfirmationText: "سيتم التواصل معكم سريعا\nنقدر صبرك",
+      operationsConfirmationText: "تم تحويل محادثتك إلى فريق العمليات، وسيتم الرد عليك في أقرب وقت.",
+      operationsDataPromptText: "لتتمكن من مساعدتكم سريعا يرجى تزويدنا بالبيانات التالية\n1. الاسم الثلاثي\n2. رقم الهاتف الذي تم التسجيل به\n3. الدورة التي تم حجزها",
+      complaintIntroText: "يرجى العلم أن هذا الاختيار يتعلق بالشكاوي فقط و سيتم الرد عليكم من 48 إلى 72 ساعة عمل\nو في حالة إن أردتم حل مشكلة متعلقة بالدورة يرجى اختيار دعم المتدربين و ذلك للرد الفوري\nلدعم المتدربين اضغط 1\nلتأكيد اختيار قسم الشكاوي اضغط 2",
+      complaintDataPromptText: "يرجى تزويدنا بالبيانات التالية\n1. الاسم الثلاثي\n2. رقم الهاتف الذي تم التسجيل به\n3. الدورة التي تم حجزها\n4. ملخص الشكوى",
+      complaintReceivedText: "تم إستلام الشكوى و سيتم الرد عليكم من 48 إلى 72 ساعة عمل",
+      rerouteUnavailableManualAssignments: false,
+      manualAssignmentUnavailableStatuses: ["offline", "busy", "away", "unavailable", "missing"],
+      unavailableManualFallback: "unassign"
+    },
+    reopen: {
+      enabled: false,
+      inboxIds: [],
+      teamId: "",
+      agentIds: [],
+      unavailableStatuses: ["offline", "busy", "away", "unavailable", "missing"],
+      fallback: "unassign",
+      assignUnassigned: true,
+      cooldownSeconds: 60,
+      skipCampaigns: true
+    }
+  };
 }
 
 function arrayBufferToBase64(buffer) {

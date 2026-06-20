@@ -10,7 +10,8 @@ const files = {
   jobs: join(dataDir, "jobs.json"),
   webhooks: join(dataDir, "webhook-events.json"),
   campaigns: join(dataDir, "campaigns.json"),
-  departmentRoutes: join(dataDir, "department-routes.json")
+  departmentRoutes: join(dataDir, "department-routes.json"),
+  automationSettings: join(dataDir, "automation-settings.json")
 };
 
 export async function readCollection(name) {
@@ -26,6 +27,36 @@ export async function readCollection(name) {
 export async function writeCollection(name, data) {
   await ensureDataDir();
   await writeFile(files[name], `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+export async function readAutomationSettings() {
+  await ensureDataDir();
+  try {
+    const text = await readFile(files.automationSettings, "utf8");
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+export async function writeAutomationSettings(settings, actor = null) {
+  await ensureDataDir();
+  const row = {
+    ...settings,
+    updatedAt: new Date().toISOString()
+  };
+  await writeFile(files.automationSettings, `${JSON.stringify(row, null, 2)}\n`, "utf8");
+  await appendAudit({
+    action: "automation_settings_saved",
+    actor,
+    summary: "Automation settings saved from the app",
+    metadata: {
+      departmentEnabled: Boolean(row.department?.enabled),
+      reopenEnabled: Boolean(row.reopen?.enabled),
+      inboxIds: row.department?.inboxIds || row.reopen?.inboxIds || []
+    }
+  });
+  return row;
 }
 
 export async function appendAudit(entry) {
