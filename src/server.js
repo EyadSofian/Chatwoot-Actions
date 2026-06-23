@@ -248,28 +248,33 @@ async function route(req, res) {
     }
 
     const body = parseJsonBody(rawBody);
-    try { await forwardIncomingToBotpress(body); } catch (e) { console.log("bridge fwd:", e.message); }
+    let bridge = null;
+    try { bridge = await forwardIncomingToBotpress(body); } catch (e) { console.log("bridge fwd:", e.message); }
     let router = null;
-    try {
-      const departmentRouter = await handleDepartmentRouterWebhook(body);
-      router = departmentRouter.handled
-        ? departmentRouter
-        : await handleReopenRouterWebhook(body);
-    } catch (error) {
-      router = {
-        ok: false,
-        reason: "webhook_automation_error",
-        error: error.message || "Unexpected webhook automation error"
-      };
+    if (bridge?.forwarded === true) {
+      router = { ok: true, reason: "forwarded_to_botpress", skippedRouters: true };
+    } else {
       try {
-        await appendAudit({
-          action: "webhook_automation_error",
-          actor: { name: "Webhook Automation", type: "automation" },
-          summary: router.error,
-          metadata: { event: body.event || body.name || "", body }
-        });
-      } catch {
-        // Keep webhook acknowledgements reliable even if local audit storage is unavailable.
+        const departmentRouter = await handleDepartmentRouterWebhook(body);
+        router = departmentRouter.handled
+          ? departmentRouter
+          : await handleReopenRouterWebhook(body);
+      } catch (error) {
+        router = {
+          ok: false,
+          reason: "webhook_automation_error",
+          error: error.message || "Unexpected webhook automation error"
+        };
+        try {
+          await appendAudit({
+            action: "webhook_automation_error",
+            actor: { name: "Webhook Automation", type: "automation" },
+            summary: router.error,
+            metadata: { event: body.event || body.name || "", body }
+          });
+        } catch {
+          // Keep webhook acknowledgements reliable even if local audit storage is unavailable.
+        }
       }
     }
 
