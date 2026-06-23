@@ -98,7 +98,7 @@ function isBasicAuthorized(req) {
 function isWebhookRoute(req) {
   if (!req.url) return false;
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-  return req.method === "POST" && url.pathname === "/api/webhooks/chatwoot";
+  return req.method === "POST" && (url.pathname === "/api/webhooks/chatwoot" || url.pathname === "/botpress/response");
 }
 
 function isBotpressRoute(req) {
@@ -310,7 +310,12 @@ async function route(req, res) {
 
   if (url.pathname === "/botpress/response") {
     if (req.method !== "POST") return sendJson(res, 200, { status: "ready" });
-    const body = await readJsonBody(req);
+    const rawBody = await readRawBody(req);
+    if (!isWebhookAuthorized(req, rawBody)) {
+      sendUnauthorized(res);
+      return;
+    }
+    const body = parseJsonBody(rawBody);
     return sendJson(res, 200, await handleBotpressResponse(body));
   }
 
