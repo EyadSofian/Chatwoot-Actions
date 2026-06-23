@@ -29,6 +29,7 @@ import {
   parsePhoneAssignInput,
   probeChatwoot
 } from "./operations.js";
+import { forwardIncomingToBotpress, handleBotpressResponse } from "./botpressBridge.js";
 
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const publicDir = join(rootDir, "public");
@@ -247,6 +248,7 @@ async function route(req, res) {
     }
 
     const body = parseJsonBody(rawBody);
+    try { await forwardIncomingToBotpress(body); } catch (e) { console.log("bridge fwd:", e.message); }
     let router = null;
     try {
       const departmentRouter = await handleDepartmentRouterWebhook(body);
@@ -304,6 +306,12 @@ async function route(req, res) {
     const job = jobs.find(item => item.id === jobExportMatch[1]);
     if (!job) return sendJson(res, 404, { error: "Job not found" });
     return sendCsv(res, `${job.id}.csv`, toCsv(job.results || []));
+  }
+
+  if (url.pathname === "/botpress/response") {
+    if (req.method !== "POST") return sendJson(res, 200, { status: "ready" });
+    const body = await readJsonBody(req);
+    return sendJson(res, 200, await handleBotpressResponse(body));
   }
 
   if (req.method === "GET") {
