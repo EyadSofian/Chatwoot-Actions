@@ -53,6 +53,7 @@ export async function writeAutomationSettings(settings, actor = null) {
     metadata: {
       departmentEnabled: Boolean(row.department?.enabled),
       reopenEnabled: Boolean(row.reopen?.enabled),
+      botpressEnabled: Boolean(row.botpress?.enabled),
       inboxIds: row.department?.inboxIds || row.reopen?.inboxIds || []
     }
   });

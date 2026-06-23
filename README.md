@@ -75,6 +75,48 @@ The Chatwoot Dashboard App includes an **Automation** tab. Admins can change the
 
 Saved settings live in `DATA_DIR/automation-settings.json` and override the matching Railway environment variables. If no settings were saved yet, the app shows the Railway defaults. Keep a Railway Volume attached if these settings must survive redeploys.
 
+### Fahd Botpress handoff
+
+Botpress Cloud should call this app instead of calling Chatwoot directly:
+
+```text
+POST /botpress-cloud
+Header: x-botpress-secret: WEBHOOK_SECRET
+```
+
+The Automation tab controls whether Fahd is enabled, its working hours, whether broadcast handoffs are ignored, and the outside-hours reply. Default Fahd hours are `10:00` to `21:00` in `Africa/Cairo`, every day except Friday.
+
+Useful Railway defaults:
+
+```text
+BOTPRESS_CLOUD_ENABLED=false
+BOTPRESS_CLOUD_SKIP_BROADCASTS=true
+BOTPRESS_CLOUD_WORKING_HOURS_ENABLED=true
+BOTPRESS_CLOUD_TIMEZONE=Africa/Cairo
+BOTPRESS_CLOUD_START=10:00
+BOTPRESS_CLOUD_END=21:00
+BOTPRESS_CLOUD_DAYS=0,1,2,3,4,6
+BOTPRESS_CLOUD_OUTSIDE_HOURS_MODE=send_message
+```
+
+Minimal Botpress Execute Code payload:
+
+```ts
+await axios.post(
+  "https://your-ops-console.example.com/botpress-cloud",
+  {
+    conversationId: user.chatwoot_conversation_id,
+    summary: workflow.chatSummary || workflow.transcript || "العميل طلب التحدث لموظف.",
+    department: workflow.department || "operations",
+    isBroadcastReply: Boolean(workflow.isBroadcastReply),
+    source: "botpress-cloud"
+  },
+  { headers: { "x-botpress-secret": env.WEBHOOK_SECRET } }
+);
+```
+
+Outside Fahd working hours, the app sends only the outside-hours message and does not open the conversation, assign a team/agent, or add a private note. Broadcast handoffs are skipped when `isBroadcastReply=true` or a campaign/broadcast marker is sent in the payload.
+
 ## Chatwoot setup
 
 1. Create or copy a user access token from Chatwoot profile settings.

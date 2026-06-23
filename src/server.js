@@ -17,6 +17,7 @@ import { toCsv } from "./exporters.js";
 import { verifyChatwootWebhookSignature } from "./webhookSecurity.js";
 import {
   buildBulkPreview,
+  handleBotpressCloudHandoff,
   buildPhoneAssignPreview,
   executeBulkAction,
   executePhoneAssign,
@@ -68,7 +69,7 @@ server.listen(port, host, () => {
 });
 
 function isAuthorized(req) {
-  if (isWebhookSecretAuthorized(req)) return true;
+  if (isSharedSecretAuthorized(req)) return true;
   if (isBasicAuthorized(req)) return true;
 
   const password = process.env.OPS_PASSWORD;
@@ -99,21 +100,29 @@ function isWebhookRoute(req) {
   return req.method === "POST" && url.pathname === "/api/webhooks/chatwoot";
 }
 
+function isBotpressRoute(req) {
+  if (!req.url) return false;
+  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  return req.method === "POST" && (url.pathname === "/botpress-cloud" || url.pathname === "/api/botpress-cloud");
+}
+
 function isWebhookAuthorized(req, rawBody) {
   const hasPassword = Boolean(process.env.OPS_PASSWORD);
   const hasWebhookSecret = Boolean(getWebhookSecret());
-  if (isWebhookSecretAuthorized(req) || isWebhookSignatureAuthorized(req, rawBody) || isBasicAuthorized(req)) return true;
+  if (isSharedSecretAuthorized(req) || isWebhookSignatureAuthorized(req, rawBody) || isBasicAuthorized(req)) return true;
   return !hasPassword && !hasWebhookSecret;
 }
 
-function isWebhookSecretAuthorized(req) {
+function isSharedSecretAuthorized(req) {
   const secret = getWebhookSecret();
   if (!secret || !req.url) return false;
 
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-  if (url.pathname !== "/api/webhooks/chatwoot") return false;
+  if (!["/api/webhooks/chatwoot", "/botpress-cloud", "/api/botpress-cloud"].includes(url.pathname)) return false;
 
-  const suppliedSecret = getFirstHeader(req.headers["x-chatwoot-ops-secret"]) || getFirstHeader(req.headers["x-webhook-secret"]) ||
+  const suppliedSecret = getFirstHeader(req.headers["x-chatwoot-ops-secret"]) ||
+    getFirstHeader(req.headers["x-botpress-secret"]) ||
+    getFirstHeader(req.headers["x-webhook-secret"]) ||
     url.searchParams.get("secret") || url.searchParams.get("token");
   return suppliedSecret === secret;
 }
@@ -197,6 +206,12 @@ async function route(req, res) {
       saved: true,
       updatedAt: saved.updatedAt
     });
+  }
+
+  if (req.method === "POST" && (url.pathname === "/botpress-cloud" || url.pathname === "/api/botpress-cloud")) {
+    if (!isBotpressRoute(req)) return sendJson(res, 404, { error: "Not found" });
+    const body = await readJsonBody(req);
+    return sendJson(res, 200, await handleBotpressCloudHandoff(body));
   }
 
   if (req.method === "POST" && url.pathname === "/api/chatwoot/audit") {

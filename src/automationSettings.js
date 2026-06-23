@@ -1,5 +1,15 @@
 const DEFAULT_UNAVAILABLE_STATUSES = ["offline", "busy", "away", "unavailable", "missing"];
 const DEFAULT_BUSINESS_DAYS = ["0", "1", "2", "3", "4", "5", "6"];
+const DEFAULT_BOTPRESS_BUSINESS_DAYS = ["0", "1", "2", "3", "4", "6"];
+const DEFAULT_BOTPRESS_OUTSIDE_HOURS_MESSAGE = `شكراً لتواصلكم معنا،
+
+حالياً أنتم تتواصلون خارج أوقات العمل الرسمية، والتي تمتد من 10:00 صباحاً حتى 9:00 مساءً طوال أيام الأسبوع ما عدا الجمعة.
+
+تم استلام رسالتكم وسيقوم أحد أعضاء فريقنا بالتواصل معكم في أقرب وقت ممكن خلال ساعات العمل.
+
+مع خالص التقدير،
+
+فريق تشغيل إنجوسوفت`;
 
 export function defaultAutomationSettings(env = process.env) {
   return {
@@ -62,6 +72,20 @@ export function defaultAutomationSettings(env = process.env) {
       assignUnassigned: parseBoolean(env.REOPEN_ROUTER_ASSIGN_UNASSIGNED, true),
       cooldownSeconds: numberValue(env.REOPEN_ROUTER_COOLDOWN_SECONDS, 60),
       skipCampaigns: parseBoolean(env.REOPEN_ROUTER_SKIP_CAMPAIGNS, true)
+    },
+    botpress: {
+      enabled: parseBoolean(env.BOTPRESS_CLOUD_ENABLED, false),
+      skipBroadcasts: parseBoolean(env.BOTPRESS_CLOUD_SKIP_BROADCASTS, true),
+      workingHoursEnabled: parseBoolean(env.BOTPRESS_CLOUD_WORKING_HOURS_ENABLED, true),
+      timezone: stringValue(env.BOTPRESS_CLOUD_TIMEZONE, "Africa/Cairo"),
+      start: stringValue(env.BOTPRESS_CLOUD_START, "10:00"),
+      end: stringValue(env.BOTPRESS_CLOUD_END, "21:00"),
+      days: parseList(env.BOTPRESS_CLOUD_DAYS, DEFAULT_BOTPRESS_BUSINESS_DAYS),
+      outsideHoursMessage: stringValue(
+        env.BOTPRESS_CLOUD_OUTSIDE_HOURS_MESSAGE,
+        DEFAULT_BOTPRESS_OUTSIDE_HOURS_MESSAGE
+      ),
+      outsideHoursMode: stringValue(env.BOTPRESS_CLOUD_OUTSIDE_HOURS_MODE, "send_message")
     }
   };
 }
@@ -71,7 +95,8 @@ export function mergeAutomationSettings(saved = null, env = process.env) {
   if (!saved || typeof saved !== "object") return defaults;
   return normalizeAutomationSettings({
     department: { ...defaults.department, ...(saved.department || {}) },
-    reopen: { ...defaults.reopen, ...(saved.reopen || {}) }
+    reopen: { ...defaults.reopen, ...(saved.reopen || {}) },
+    botpress: { ...defaults.botpress, ...(saved.botpress || {}) }
   }, env);
 }
 
@@ -79,6 +104,7 @@ export function normalizeAutomationSettings(settings = {}, env = process.env) {
   const defaults = defaultAutomationSettings(env);
   const department = { ...defaults.department, ...(settings.department || {}) };
   const reopen = { ...defaults.reopen, ...(settings.reopen || {}) };
+  const botpress = { ...defaults.botpress, ...(settings.botpress || {}) };
 
   return {
     department: {
@@ -127,6 +153,17 @@ export function normalizeAutomationSettings(settings = {}, env = process.env) {
       assignUnassigned: Boolean(reopen.assignUnassigned),
       cooldownSeconds: numberValue(reopen.cooldownSeconds, 60),
       skipCampaigns: Boolean(reopen.skipCampaigns)
+    },
+    botpress: {
+      enabled: Boolean(botpress.enabled),
+      skipBroadcasts: Boolean(botpress.skipBroadcasts),
+      workingHoursEnabled: Boolean(botpress.workingHoursEnabled),
+      timezone: stringValue(botpress.timezone, defaults.botpress.timezone),
+      start: stringValue(botpress.start, defaults.botpress.start),
+      end: stringValue(botpress.end, defaults.botpress.end),
+      days: parseList(botpress.days, DEFAULT_BOTPRESS_BUSINESS_DAYS),
+      outsideHoursMessage: stringValue(botpress.outsideHoursMessage, defaults.botpress.outsideHoursMessage),
+      outsideHoursMode: normalizeChoice(botpress.outsideHoursMode, ["send_message", "return_only"], "send_message")
     }
   };
 }
@@ -143,7 +180,8 @@ export function automationSettingsToRouterOptions(settings = {}) {
       businessDays: normalized.department.businessDays,
       reassignUnavailableManualAssignments: normalized.department.rerouteUnavailableManualAssignments
     },
-    reopen: normalized.reopen
+    reopen: normalized.reopen,
+    botpress: normalized.botpress
   };
 }
 

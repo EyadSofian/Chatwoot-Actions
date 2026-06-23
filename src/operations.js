@@ -464,6 +464,129 @@ export async function getOpenConversationReport(connection, criteria = {}) {
   };
 }
 
+export async function handleBotpressCloudHandoff(body = {}, options = {}) {
+  const botpressConfig = buildBotpressCloudConfig({
+    ...await loadSavedRouterOptions("botpress", options),
+    ...(options.botpress || {})
+  });
+  if (!botpressConfig.enabled) {
+    return { ok: true, skipped: true, reason: "botpress_cloud_disabled" };
+  }
+
+  const conversationId = getBotpressConversationId(body);
+  if (!conversationId) {
+    const error = new Error("Missing Chatwoot conversation id.");
+    error.status = 400;
+    throw error;
+  }
+
+  if (botpressConfig.skipBroadcasts && isBotpressBroadcast(body)) {
+    await auditDepartmentRouter("department_router_botpress_broadcast_skipped", {
+      conversationId,
+      source: body.source || "botpress-cloud"
+    }, botpressConfig.audit);
+    return {
+      ok: true,
+      skipped: true,
+      reason: "botpress_broadcast_skipped",
+      conversationId
+    };
+  }
+
+  const client = makeClient(options.connection || {});
+  if (botpressConfig.workingHours.enabled && !isWithinBusinessHours(botpressConfig.workingHours)) {
+    let message = null;
+    if (botpressConfig.outsideHoursMode === "send_message" && botpressConfig.outsideHoursMessage) {
+      message = await sendDepartmentMessage(client, conversationId, botpressConfig.outsideHoursMessage);
+    }
+    await auditDepartmentRouter("department_router_botpress_outside_hours", {
+      conversationId,
+      messageId: message?.id || null,
+      source: body.source || "botpress-cloud"
+    }, botpressConfig.audit);
+    return {
+      ok: true,
+      skipped: true,
+      reason: "botpress_outside_hours",
+      conversationId,
+      message: botpressConfig.outsideHoursMessage,
+      messageId: message?.id || null
+    };
+  }
+
+  const config = buildDepartmentRouterConfig({
+    ...await loadSavedRouterOptions("department", options),
+    ...options
+  });
+  if (!config.enabled) {
+    return { ok: true, skipped: true, reason: "department_router_disabled", conversationId };
+  }
+
+  const summaryText = getBotpressSummary(body);
+  const department = getBotpressDepartment(body);
+  const sendCustomerMessage = parseBooleanOption(body.sendCustomerMessage, undefined, false);
+
+  let noteMessage = null;
+  if (summaryText) {
+    noteMessage = await client.createMessage(conversationId, {
+      content: `${body.privateNotePrefix || "📝 **ملخص فهد:**"}\n${summaryText}`,
+      private: true,
+      message_type: "outgoing",
+      content_type: "text",
+      content_attributes: {}
+    });
+  }
+
+  let statusResult = null;
+  if (body.openConversation !== false) {
+    statusResult = await client.toggleConversationStatus(conversationId, body.status || "open");
+  }
+
+  const response = await client.conversationDetails(conversationId);
+  const conversation = unwrapConversationResponse(response) || { id: conversationId };
+  conversation.id = conversation.id || conversationId;
+
+  let routing = null;
+  if (department === "complaints") {
+    if (sendCustomerMessage && config.complaintReceivedText) {
+      await sendDepartmentMessage(client, conversationId, config.complaintReceivedText);
+    }
+    routing = await routeComplaintToAgent(client, conversation, config, "botpress_cloud_handoff");
+  } else {
+    routing = await routeConversationToDepartment(
+      client,
+      conversation,
+      config,
+      department,
+      "botpress_cloud_handoff",
+      {
+        allowReassignment: true,
+        agentMode: department === "sales" && config.salesAssignmentMode === "any_status" ? "any_status" : "online",
+        sendConfirmation: sendCustomerMessage
+      }
+    );
+  }
+
+  await auditDepartmentRouter("department_router_botpress_cloud_handoff", {
+    conversationId,
+    department,
+    noteMessageId: noteMessage?.id || null,
+    routingAction: routing?.action || null,
+    routingReason: routing?.reason || null,
+    source: body.source || "botpress-cloud"
+  }, config.audit);
+
+  return {
+    ok: true,
+    action: "botpress_cloud_handoff",
+    conversationId,
+    department,
+    noteMessageId: noteMessage?.id || null,
+    statusChanged: Boolean(statusResult),
+    routing
+  };
+}
+
 export async function handleDepartmentRouterWebhook(payload = {}, options = {}) {
   const config = buildDepartmentRouterConfig({
     ...await loadSavedRouterOptions("department", options),
@@ -789,11 +912,35 @@ function buildDepartmentRouterConfig(options = {}) {
 }
 
 async function loadSavedRouterOptions(routerName, options = {}) {
-  if (options.useSavedSettings === false || options.enabled !== undefined) return {};
+  if (options.useSavedSettings === false) return {};
+  if (routerName !== "botpress" && options.enabled !== undefined) return {};
   const saved = await readAutomationSettings();
   if (!saved) return {};
   const routerOptions = automationSettingsToRouterOptions(saved);
   return routerOptions[routerName] || {};
+}
+
+function buildBotpressCloudConfig(options = {}) {
+  return {
+    enabled: parseBooleanOption(options.enabled, process.env.BOTPRESS_CLOUD_ENABLED, false),
+    skipBroadcasts: parseBooleanOption(options.skipBroadcasts, process.env.BOTPRESS_CLOUD_SKIP_BROADCASTS, true),
+    outsideHoursMessage: String(options.outsideHoursMessage ?? process.env.BOTPRESS_CLOUD_OUTSIDE_HOURS_MESSAGE ??
+      "شكراً لتواصلكم معنا،\n\nحالياً أنتم تتواصلون خارج أوقات العمل الرسمية، والتي تمتد من 10:00 صباحاً حتى 9:00 مساءً طوال أيام الأسبوع ما عدا الجمعة.\n\nتم استلام رسالتكم وسيقوم أحد أعضاء فريقنا بالتواصل معكم في أقرب وقت ممكن خلال ساعات العمل.\n\nمع خالص التقدير،\n\nفريق تشغيل إنجوسوفت"),
+    outsideHoursMode: String(options.outsideHoursMode ?? process.env.BOTPRESS_CLOUD_OUTSIDE_HOURS_MODE ?? "send_message").toLowerCase(),
+    workingHours: {
+      enabled: parseBooleanOption(options.workingHoursEnabled, process.env.BOTPRESS_CLOUD_WORKING_HOURS_ENABLED, true),
+      timezone: String(options.timezone ?? process.env.BOTPRESS_CLOUD_TIMEZONE ?? "Africa/Cairo"),
+      startMinutes: parseClockMinutes(options.start ?? process.env.BOTPRESS_CLOUD_START, 10 * 60),
+      endMinutes: parseClockMinutes(options.end ?? process.env.BOTPRESS_CLOUD_END, 21 * 60),
+      days: new Set(
+        parseListOption(options.days, process.env.BOTPRESS_CLOUD_DAYS, ["0", "1", "2", "3", "4", "6"])
+          .map(value => Number(value))
+          .filter(value => Number.isInteger(value) && value >= 0 && value <= 6)
+      ),
+      now: options.now
+    },
+    audit: options.audit !== false
+  };
 }
 
 const WEEKDAY_INDEX = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
@@ -1739,6 +1886,86 @@ function parseComplaintSelection(content) {
   if (["1", "01", "دعم المتدربين", "متدربين"].includes(normalized)) return "operations";
   if (["2", "02", "شكوى", "الشكاوي", "شكاوي", "الشكاوى"].includes(normalized)) return "complaints";
   return null;
+}
+
+function getBotpressConversationId(body) {
+  return body.conversationId ||
+    body.conversation_id ||
+    body.chatwoot_conversation_id ||
+    body.chatwootConversationId ||
+    body.user?.chatwoot_conversation_id ||
+    body.user?.chatwootConversationId ||
+    body.workflow?.chatwoot_conversation_id ||
+    body.workflow?.chatwootConversationId ||
+    null;
+}
+
+function getBotpressSummary(body) {
+  return String(
+    body.summary ||
+    body.chatSummary ||
+    body.workflow?.chatSummary ||
+    body.transcript ||
+    body.workflow?.transcript ||
+    "العميل طلب التحدث لموظف."
+  ).trim();
+}
+
+function getBotpressDepartment(body) {
+  const values = [
+    body.department,
+    body.route,
+    body.targetDepartment,
+    body.handoffDepartment,
+    body.selection,
+    body.choice,
+    body.workflow?.department,
+    body.workflow?.route,
+    body.workflow?.targetDepartment,
+    body.workflow?.handoffDepartment,
+    body.workflow?.selection,
+    body.workflow?.choice
+  ];
+
+  for (const value of values) {
+    const direct = normalizeDepartmentText(value);
+    if (!direct) continue;
+    if (["resale", "re-sale", "sales", "sale", "مبيعات", "المبيعات", "ريسيل"].includes(direct)) return "sales";
+    if (["operation", "operations", "ops", "support", "trainee support", "دعم", "دعم المتدربين", "عمليات", "العمليات"].includes(direct)) return "operations";
+    if (["complaint", "complaints", "شكوى", "شكاوي", "الشكاوي", "الشكاوى"].includes(direct)) return "complaints";
+    const parsed = parseDepartmentSelection(value);
+    if (parsed) return parsed;
+  }
+
+  return "operations";
+}
+
+function isBotpressBroadcast(body) {
+  const values = [
+    body.isBroadcast,
+    body.isBroadcastReply,
+    body.broadcast,
+    body.broadcastReply,
+    body.fromBroadcast,
+    body.workflow?.isBroadcast,
+    body.workflow?.isBroadcastReply,
+    body.workflow?.broadcast,
+    body.workflow?.broadcastReply,
+    body.workflow?.fromBroadcast
+  ];
+  if (values.some(value => parseBooleanOption(value, undefined, false))) return true;
+
+  const source = normalizeDepartmentText(body.source || body.workflow?.source || body.campaignSource || "");
+  if (["broadcast", "campaign", "whatsapp broadcast", "chatwoot campaign"].includes(source)) return true;
+
+  return Boolean(
+    body.campaignId ||
+    body.campaign_id ||
+    body.chatwootCampaignId ||
+    body.workflow?.campaignId ||
+    body.workflow?.campaign_id ||
+    body.workflow?.chatwootCampaignId
+  );
 }
 
 function isDepartmentChangeRequest(content) {

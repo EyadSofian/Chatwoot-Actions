@@ -381,6 +381,15 @@ Object.assign(translations.ar, {
   "Complaint agent email": "إيميل مسؤول الشكاوى",
   "Complaint agent name": "اسم مسؤول الشكاوى",
   "Reopen router": "راوتر إعادة الفتح",
+  "Fahd Botpress": "فهد Botpress",
+  "Enable Fahd handoff": "تشغيل تسليم فهد",
+  "Skip broadcast handoffs": "تجاهل تسليمات البرودكاست",
+  "Fahd working hours": "مواعيد عمل فهد",
+  "Outside-hours message": "رسالة خارج مواعيد العمل",
+  "Outside-hours mode": "تصرف خارج مواعيد العمل",
+  "Send message only": "إرسال الرسالة فقط",
+  "Return message to Botpress": "إرجاع الرسالة لـ Botpress",
+  "Botpress should call /botpress-cloud with x-botpress-secret. Outside working hours, the app sends only this message and does not open, assign, or add a private note.": "Botpress ينادي /botpress-cloud مع x-botpress-secret. خارج مواعيد العمل، التطبيق يرسل الرسالة فقط ولا يفتح ولا يعمل تعيين ولا يضيف private note.",
   "Enable reopen router": "تشغيل راوتر إعادة الفتح",
   "Reopen team": "فريق إعادة الفتح",
   "Allowed reopen agents": "موظفين إعادة الفتح المسموح لهم",
@@ -570,6 +579,7 @@ function automationView() {
   const settings = state.automationSettings || defaultClientAutomationSettings();
   const department = settings.department || {};
   const reopen = settings.reopen || {};
+  const botpress = settings.botpress || {};
   const meta = state.automationSettingsMeta || {};
   return `
     ${embeddedBanner()}
@@ -587,6 +597,30 @@ function automationView() {
         <div class="actions">
           <button class="button secondary" data-action="load-automation-settings">${tr("Load settings")}</button>
           <button class="button" data-action="save-automation-settings">${tr("Save automation settings")}</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>${tr("Fahd Botpress")}</h2></div>
+      <div class="panel-body">
+        <p class="notice">${tr("Botpress should call /botpress-cloud with x-botpress-secret. Outside working hours, the app sends only this message and does not open, assign, or add a private note.")}</p>
+        <div class="grid two">
+          ${checkboxPanel([
+            ["automationBotpressEnabled", "Enable Fahd handoff", botpress.enabled],
+            ["automationBotpressWorkingHoursEnabled", "Enable business hours", botpress.workingHoursEnabled],
+            ["automationBotpressSkipBroadcasts", "Skip broadcast handoffs", botpress.skipBroadcasts]
+          ])}
+          ${dayCheckboxGroup("automationBotpressDays", "Fahd working hours", botpress.days || [])}
+        </div>
+        <div class="form-grid span-all">
+          ${inputField("automationBotpressTimezone", "Timezone", botpress.timezone || "Africa/Cairo")}
+          ${inputField("automationBotpressStart", "Start time", botpress.start || "10:00")}
+          ${inputField("automationBotpressEnd", "End time", botpress.end || "21:00")}
+          ${selectField("automationBotpressOutsideHoursMode", "Outside-hours mode", [["send_message", "Send message only"], ["return_only", "Return message to Botpress"]], botpress.outsideHoursMode || "send_message")}
+        </div>
+        <div class="span-all">
+          ${textareaField("automationBotpressOutsideHoursMessage", "Outside-hours message", botpress.outsideHoursMessage || "")}
         </div>
       </div>
     </section>
@@ -1227,6 +1261,17 @@ function getAutomationSettingsFromForm() {
       assignUnassigned: checked("automationReopenAssignUnassigned"),
       cooldownSeconds: Number(value("automationReopenCooldown") || 60),
       skipCampaigns: checked("automationReopenSkipCampaigns")
+    },
+    botpress: {
+      enabled: checked("automationBotpressEnabled"),
+      skipBroadcasts: checked("automationBotpressSkipBroadcasts"),
+      workingHoursEnabled: checked("automationBotpressWorkingHoursEnabled"),
+      timezone: value("automationBotpressTimezone"),
+      start: value("automationBotpressStart"),
+      end: value("automationBotpressEnd"),
+      days: checkedValues("automationBotpressDays"),
+      outsideHoursMessage: value("automationBotpressOutsideHoursMessage"),
+      outsideHoursMode: value("automationBotpressOutsideHoursMode")
     }
   };
 }
@@ -1892,6 +1937,17 @@ function defaultClientAutomationSettings() {
       assignUnassigned: true,
       cooldownSeconds: 60,
       skipCampaigns: true
+    },
+    botpress: {
+      enabled: false,
+      skipBroadcasts: true,
+      workingHoursEnabled: true,
+      timezone: "Africa/Cairo",
+      start: "10:00",
+      end: "21:00",
+      days: ["0", "1", "2", "3", "4", "6"],
+      outsideHoursMode: "send_message",
+      outsideHoursMessage: "شكراً لتواصلكم معنا،\n\nحالياً أنتم تتواصلون خارج أوقات العمل الرسمية، والتي تمتد من 10:00 صباحاً حتى 9:00 مساءً طوال أيام الأسبوع ما عدا الجمعة.\n\nتم استلام رسالتكم وسيقوم أحد أعضاء فريقنا بالتواصل معكم في أقرب وقت ممكن خلال ساعات العمل.\n\nمع خالص التقدير،\n\nفريق تشغيل إنجوسوفت"
     }
   };
 }

@@ -6,6 +6,7 @@ import {
   extractPhoneNumbers,
   filterDepartmentAgents,
   getOpenConversationReport,
+  handleBotpressCloudHandoff,
   handleDepartmentRouterWebhook,
   handleReopenRouterWebhook,
   isWithinBusinessHours,
@@ -83,6 +84,92 @@ test("isWithinBusinessHours respects timezone, time range, and working days", ()
   assert.equal(isWithinBusinessHours({ ...base, days: new Set() }, new Date("2026-06-14T10:00:00Z")), false);
   // Disabled -> always treated as within hours
   assert.equal(isWithinBusinessHours({ enabled: false }, new Date("2026-06-14T20:00:00Z")), true);
+});
+
+test("handleBotpressCloudHandoff sends only outside-hours message after Fahd hours", async () => {
+  const messages = [];
+  let statusCalled = false;
+  let assignmentCalled = false;
+  let detailsCalled = false;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 700 }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/toggle_status") {
+      statusCalled = true;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments") {
+      assignmentCalled = true;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      detailsCalled = true;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleBotpressCloudHandoff({
+      conversationId: 33,
+      summary: "customer asked after hours",
+      department: "operations"
+    }, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      botpress: {
+        enabled: true,
+        workingHoursEnabled: true,
+        timezone: "Africa/Cairo",
+        start: "10:00",
+        end: "21:00",
+        days: ["0", "1", "2", "3", "4", "6"],
+        outsideHoursMessage: "outside hours",
+        outsideHoursMode: "send_message",
+        now: () => new Date("2026-06-14T19:30:00Z")
+      },
+      audit: false
+    });
+
+    assert.equal(result.reason, "botpress_outside_hours");
+    assert.equal(result.messageId, 700);
+    assert.deepEqual(messages, [{
+      content: "outside hours",
+      message_type: "outgoing",
+      private: false,
+      content_type: "text",
+      content_attributes: {}
+    }]);
+    assert.equal(statusCalled, false);
+    assert.equal(assignmentCalled, false);
+    assert.equal(detailsCalled, false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleBotpressCloudHandoff skips broadcast handoffs before touching Chatwoot", async () => {
+  const result = await handleBotpressCloudHandoff({
+    conversationId: 33,
+    isBroadcastReply: true,
+    source: "broadcast"
+  }, {
+    botpress: {
+      enabled: true,
+      skipBroadcasts: true
+    },
+    audit: false
+  });
+
+  assert.equal(result.skipped, true);
+  assert.equal(result.reason, "botpress_broadcast_skipped");
 });
 
 test("buildPhoneAssignPreview matches phone contacts and conversations", async () => {

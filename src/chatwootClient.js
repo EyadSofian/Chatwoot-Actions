@@ -181,6 +181,13 @@ export class ChatwootClient {
     });
   }
 
+  toggleConversationStatus(conversationId, status) {
+    return this.request(this.accountPath(`/conversations/${conversationId}/toggle_status`), {
+      method: "POST",
+      body: { status }
+    });
+  }
+
   conversationMessages(conversationId, query = {}) {
     return this.request(this.accountPath(`/conversations/${conversationId}/messages`), { query });
   }
