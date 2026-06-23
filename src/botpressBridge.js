@@ -1,6 +1,7 @@
 import { makeClient } from "./operations.js";
 
 const BOTPRESS_WEBHOOK_URL = process.env.BOTPRESS_WEBHOOK_URL || "";
+const BOTPRESS_PAT = process.env.BOTPRESS_PAT || "";
 const REQUIRE_LABEL = String(process.env.BRIDGE_REQUIRE_LABEL ?? "needs-bot").trim();
 const BOT_INBOX_IDS = String(process.env.BOT_INBOX_IDS || "").split(",").map(s => s.trim()).filter(Boolean);
 
@@ -63,7 +64,7 @@ export async function forwardIncomingToBotpress(body = {}) {
 
   const res = await fetch(BOTPRESS_WEBHOOK_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(BOTPRESS_PAT ? { Authorization: `Bearer ${BOTPRESS_PAT}` } : {}) },
     body: JSON.stringify({
       userId: `chatwoot-user-${userId}`,
       messageId: `msg-${msgId}`,
