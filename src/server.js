@@ -249,7 +249,7 @@ async function route(req, res) {
 
     const body = parseJsonBody(rawBody);
     let bridge = null;
-    try { bridge = await forwardIncomingToBotpress(body); } catch (e) { console.log("bridge fwd:", e.message); }
+    try { bridge = await forwardIncomingToBotpress(body); console.log("bridge:", JSON.stringify(bridge)); } catch (e) { console.log("bridge fwd:", e.message); }
     let router = null;
     if (bridge?.forwarded === true) {
       router = { ok: true, reason: "forwarded_to_botpress", skippedRouters: true };
