@@ -86,29 +86,64 @@ test("isWithinBusinessHours respects timezone, time range, and working days", ()
   assert.equal(isWithinBusinessHours({ enabled: false }, new Date("2026-06-14T20:00:00Z")), true);
 });
 
-test("handleBotpressCloudHandoff sends only outside-hours message after Fahd hours", async () => {
+test("handleBotpressCloudHandoff queues resolved reentry after hours when no online agent exists", async () => {
   const messages = [];
+  const assignments = [];
   let statusCalled = false;
-  let assignmentCalled = false;
-  let detailsCalled = false;
+  let customAttributesBody = null;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
     res.setHeader("content-type", "application/json; charset=utf-8");
 
-    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
-      messages.push(await readRequestJson(req));
-      res.end(JSON.stringify({ id: 700 }));
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: {
+          engosoft_department_route_state: "resolved",
+          engosoft_department_prompt_next: true
+        },
+        meta: {
+          assignee: { id: 4, name: "Old Agent" },
+          inbox: { id: 2, name: "WhatsApp" }
+        }
+      }));
       return;
     }
 
-    if (url.pathname === "/api/v1/accounts/1/conversations/33/toggle_status") {
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 700 + messages.length }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/toggle_status" && req.method === "POST") {
       statusCalled = true;
+      res.end(JSON.stringify({ status: "open" }));
+      return;
     }
-    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments") {
-      assignmentCalled = true;
+    if (url.pathname === "/api/v1/accounts/1/teams/3/team_members" && req.method === "GET") {
+      res.end(JSON.stringify([
+        { id: 21, name: "Abdelrahman Adel", availability_status: "offline" }
+      ]));
+      return;
     }
-    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
-      detailsCalled = true;
+    if (url.pathname === "/api/v1/accounts/1/inbox_members/2" && req.method === "GET") {
+      res.end(JSON.stringify([
+        { id: 21, name: "Abdelrahman Adel", availability_status: "offline" }
+      ]));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignments.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
     }
 
     res.statusCode = 404;
@@ -124,32 +159,48 @@ test("handleBotpressCloudHandoff sends only outside-hours message after Fahd hou
       department: "operations"
     }, {
       connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      operationsTeamId: "3",
+      operationsAgentIds: ["21"],
+      businessHoursEnabled: true,
+      businessTimezone: "Africa/Cairo",
+      businessStart: "10:00",
+      businessEnd: "21:00",
+      businessDays: ["0", "1", "2", "3", "4", "6"],
       botpress: {
         enabled: true,
+        requireResolvedReentry: true,
         workingHoursEnabled: true,
         timezone: "Africa/Cairo",
         start: "10:00",
         end: "21:00",
         days: ["0", "1", "2", "3", "4", "6"],
+        inHoursQueueMessage: "please wait",
         outsideHoursMessage: "outside hours",
-        outsideHoursMode: "send_message",
         now: () => new Date("2026-06-14T19:30:00Z")
       },
       audit: false
     });
 
-    assert.equal(result.reason, "botpress_outside_hours");
-    assert.equal(result.messageId, 700);
+    assert.equal(result.action, "botpress_cloud_handoff");
+    assert.equal(result.routing.action, "department_team_queue");
+    assert.equal(result.queueMessageId, 702);
+    assert.equal(statusCalled, true);
+    assert.deepEqual(assignments, [{ team_id: 3 }, { assignee_id: null }]);
+    assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "routed");
     assert.deepEqual(messages, [{
+      content: "📝 **ملخص فهد:**\ncustomer asked after hours",
+      private: true,
+      message_type: "outgoing",
+      content_type: "text",
+      content_attributes: {}
+    }, {
       content: "outside hours",
       message_type: "outgoing",
       private: false,
       content_type: "text",
       content_attributes: {}
     }]);
-    assert.equal(statusCalled, false);
-    assert.equal(assignmentCalled, false);
-    assert.equal(detailsCalled, false);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -170,6 +221,58 @@ test("handleBotpressCloudHandoff skips broadcast handoffs before touching Chatwo
 
   assert.equal(result.skipped, true);
   assert.equal(result.reason, "botpress_broadcast_skipped");
+});
+
+test("handleBotpressCloudHandoff skips conversations that are not resolved re-entry", async () => {
+  let messagesCalled = false;
+  let assignmentCalled = false;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        custom_attributes: {},
+        meta: { inbox: { id: 2, name: "WhatsApp" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages") messagesCalled = true;
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments") assignmentCalled = true;
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleBotpressCloudHandoff({
+      conversationId: 33,
+      summary: "active conversation",
+      department: "operations"
+    }, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      operationsTeamId: "3",
+      botpress: {
+        enabled: true,
+        requireResolvedReentry: true
+      },
+      audit: false
+    });
+
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "botpress_not_resolved_reentry");
+    assert.equal(messagesCalled, false);
+    assert.equal(assignmentCalled, false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
 });
 
 test("buildPhoneAssignPreview matches phone contacts and conversations", async () => {

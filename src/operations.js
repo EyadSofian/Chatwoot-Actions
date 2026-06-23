@@ -493,33 +493,31 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
     };
   }
 
-  const client = makeClient(options.connection || {});
-  if (botpressConfig.workingHours.enabled && !isWithinBusinessHours(botpressConfig.workingHours)) {
-    let message = null;
-    if (botpressConfig.outsideHoursMode === "send_message" && botpressConfig.outsideHoursMessage) {
-      message = await sendDepartmentMessage(client, conversationId, botpressConfig.outsideHoursMessage);
-    }
-    await auditDepartmentRouter("department_router_botpress_outside_hours", {
-      conversationId,
-      messageId: message?.id || null,
-      source: body.source || "botpress-cloud"
-    }, botpressConfig.audit);
-    return {
-      ok: true,
-      skipped: true,
-      reason: "botpress_outside_hours",
-      conversationId,
-      message: botpressConfig.outsideHoursMessage,
-      messageId: message?.id || null
-    };
-  }
-
   const config = buildDepartmentRouterConfig({
     ...await loadSavedRouterOptions("department", options),
     ...options
   });
   if (!config.enabled) {
     return { ok: true, skipped: true, reason: "department_router_disabled", conversationId };
+  }
+
+  const client = makeClient(options.connection || {});
+  const response = await client.conversationDetails(conversationId);
+  const conversation = unwrapConversationResponse(response) || { id: conversationId };
+  conversation.id = conversation.id || conversationId;
+  const localRoute = await config.stateStore.get(conversationId);
+
+  if (botpressConfig.requireResolvedReentry && !isBotpressResolvedReentry(body, conversation, localRoute)) {
+    await auditDepartmentRouter("department_router_botpress_not_resolved_reentry", {
+      conversationId,
+      source: body.source || "botpress-cloud"
+    }, botpressConfig.audit);
+    return {
+      ok: true,
+      skipped: true,
+      reason: "botpress_not_resolved_reentry",
+      conversationId
+    };
   }
 
   const summaryText = getBotpressSummary(body);
@@ -542,16 +540,12 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
     statusResult = await client.toggleConversationStatus(conversationId, body.status || "open");
   }
 
-  const response = await client.conversationDetails(conversationId);
-  const conversation = unwrapConversationResponse(response) || { id: conversationId };
-  conversation.id = conversation.id || conversationId;
-
   let routing = null;
   if (department === "complaints") {
     if (sendCustomerMessage && config.complaintReceivedText) {
       await sendDepartmentMessage(client, conversationId, config.complaintReceivedText);
     }
-    routing = await routeComplaintToAgent(client, conversation, config, "botpress_cloud_handoff");
+    routing = await routeComplaintToAgent(client, conversation, config, "botpress_cloud_handoff", { onlineOnly: true });
   } else {
     routing = await routeConversationToDepartment(
       client,
@@ -561,9 +555,21 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
       "botpress_cloud_handoff",
       {
         allowReassignment: true,
-        agentMode: department === "sales" && config.salesAssignmentMode === "any_status" ? "any_status" : "online",
-        sendConfirmation: sendCustomerMessage
+        agentMode: "online",
+        sendConfirmation: false
       }
+    );
+  }
+
+  let queueMessage = null;
+  if (shouldSendBotpressQueueMessage(routing)) {
+    const content = getBotpressQueueMessage(botpressConfig);
+    if (content) queueMessage = await sendDepartmentMessage(client, conversationId, content);
+  } else if (sendCustomerMessage && config.confirmSelection && department !== "complaints") {
+    await sendDepartmentMessage(
+      client,
+      conversationId,
+      department === "sales" ? config.salesConfirmationText : config.operationsConfirmationText
     );
   }
 
@@ -571,6 +577,7 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
     conversationId,
     department,
     noteMessageId: noteMessage?.id || null,
+    queueMessageId: queueMessage?.id || null,
     routingAction: routing?.action || null,
     routingReason: routing?.reason || null,
     source: body.source || "botpress-cloud"
@@ -582,6 +589,7 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
     conversationId,
     department,
     noteMessageId: noteMessage?.id || null,
+    queueMessageId: queueMessage?.id || null,
     statusChanged: Boolean(statusResult),
     routing
   };
@@ -924,6 +932,13 @@ function buildBotpressCloudConfig(options = {}) {
   return {
     enabled: parseBooleanOption(options.enabled, process.env.BOTPRESS_CLOUD_ENABLED, false),
     skipBroadcasts: parseBooleanOption(options.skipBroadcasts, process.env.BOTPRESS_CLOUD_SKIP_BROADCASTS, true),
+    requireResolvedReentry: parseBooleanOption(
+      options.requireResolvedReentry,
+      process.env.BOTPRESS_CLOUD_REQUIRE_RESOLVED_REENTRY,
+      true
+    ),
+    inHoursQueueMessage: String(options.inHoursQueueMessage ?? process.env.BOTPRESS_CLOUD_IN_HOURS_QUEUE_MESSAGE ??
+      "سيتم التواصل معكم في أقرب وقت.\nنقدر صبركم."),
     outsideHoursMessage: String(options.outsideHoursMessage ?? process.env.BOTPRESS_CLOUD_OUTSIDE_HOURS_MESSAGE ??
       "شكراً لتواصلكم معنا،\n\nحالياً أنتم تتواصلون خارج أوقات العمل الرسمية، والتي تمتد من 10:00 صباحاً حتى 9:00 مساءً طوال أيام الأسبوع ما عدا الجمعة.\n\nتم استلام رسالتكم وسيقوم أحد أعضاء فريقنا بالتواصل معكم في أقرب وقت ممكن خلال ساعات العمل.\n\nمع خالص التقدير،\n\nفريق تشغيل إنجوسوفت"),
     outsideHoursMode: String(options.outsideHoursMode ?? process.env.BOTPRESS_CLOUD_OUTSIDE_HOURS_MODE ?? "send_message").toLowerCase(),
@@ -1546,13 +1561,16 @@ export function filterDepartmentAgents(teamAgentsResponse, inboxAgentsResponse, 
   });
 }
 
-async function routeComplaintToAgent(client, conversation, config, reason) {
+async function routeComplaintToAgent(client, conversation, config, reason, { onlineOnly = false } = {}) {
   const conversationId = conversation.id;
   const inboxId = getConversationInboxId(conversation);
   const teamId = config.operationsTeamId;
   if (!teamId) throw new Error("Missing operations team id for complaint router.");
 
-  const targetAgent = await resolveComplaintAgent(client, config);
+  const resolvedAgent = await resolveComplaintAgent(client, config, { includeAvailability: onlineOnly });
+  const targetAgent = resolvedAgent && (!onlineOnly || getAgentAvailability(resolvedAgent, "offline") === "online")
+    ? resolvedAgent
+    : null;
   const currentAssigneeId = getConversationAssigneeId(conversation);
 
   let assignmentResult = null;
@@ -1655,8 +1673,15 @@ async function handleUnavailableManualAssignmentFallback(client, conversation, c
   };
 }
 
-async function resolveComplaintAgent(client, config) {
-  if (config.complaintAgentId) return { id: Number(config.complaintAgentId), name: config.complaintAgentName };
+async function resolveComplaintAgent(client, config, { includeAvailability = false } = {}) {
+  if (config.complaintAgentId) {
+    if (includeAvailability) {
+      const agents = normalizeRows(await client.listAgents());
+      const agent = agents.find(item => String(getAgentId(item)) === String(config.complaintAgentId));
+      if (agent) return agent;
+    }
+    return { id: Number(config.complaintAgentId), name: config.complaintAgentName };
+  }
 
   const agents = normalizeRows(await client.listAgents());
   if (config.complaintAgentEmail) {
@@ -1938,6 +1963,57 @@ function getBotpressDepartment(body) {
   }
 
   return "operations";
+}
+
+function isBotpressResolvedReentry(body, conversation, localRoute) {
+  const explicitFlags = [
+    body.wasResolved,
+    body.reopenedFromResolved,
+    body.resolvedReentry,
+    body.shouldResetContext,
+    body.user?.wasResolved,
+    body.user?.reopenedFromResolved,
+    body.user?.resolvedReentry,
+    body.user?.shouldResetContext,
+    body.workflow?.wasResolved,
+    body.workflow?.reopenedFromResolved,
+    body.workflow?.resolvedReentry,
+    body.workflow?.shouldResetContext
+  ];
+  if (explicitFlags.some(value => parseBooleanOption(value, undefined, false))) return true;
+
+  const customAttributes = getConversationCustomAttributes(conversation);
+  const states = [
+    localRoute?.state,
+    customAttributes[DEPARTMENT_ATTRIBUTES.state],
+    conversation?.status
+  ].map(value => String(value || "").toLowerCase());
+  if (states.includes("resolved")) return true;
+
+  const promptNext = parseBooleanOption(
+    localRoute?.promptNext ?? customAttributes[DEPARTMENT_ATTRIBUTES.promptNext],
+    undefined,
+    false
+  );
+  if (promptNext) return true;
+
+  const messages = normalizeRows(conversation?.messages);
+  return messages.some(message => isResolvedActivityMessage(message));
+}
+
+function shouldSendBotpressQueueMessage(routing) {
+  const action = String(routing?.action || "").toLowerCase();
+  return action === "department_team_queue" ||
+    action === "department_team_unassigned" ||
+    action === "complaint_team_queue";
+}
+
+function getBotpressQueueMessage(botpressConfig) {
+  const outsideWorkingHours = botpressConfig.workingHours?.enabled &&
+    !isWithinBusinessHours(botpressConfig.workingHours);
+  return outsideWorkingHours
+    ? botpressConfig.outsideHoursMessage
+    : botpressConfig.inHoursQueueMessage;
 }
 
 function isBotpressBroadcast(body) {

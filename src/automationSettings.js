@@ -1,6 +1,8 @@
 const DEFAULT_UNAVAILABLE_STATUSES = ["offline", "busy", "away", "unavailable", "missing"];
 const DEFAULT_BUSINESS_DAYS = ["0", "1", "2", "3", "4", "5", "6"];
 const DEFAULT_BOTPRESS_BUSINESS_DAYS = ["0", "1", "2", "3", "4", "6"];
+const DEFAULT_BOTPRESS_IN_HOURS_QUEUE_MESSAGE = `سيتم التواصل معكم في أقرب وقت.
+نقدر صبركم.`;
 const DEFAULT_BOTPRESS_OUTSIDE_HOURS_MESSAGE = `شكراً لتواصلكم معنا،
 
 حالياً أنتم تتواصلون خارج أوقات العمل الرسمية، والتي تمتد من 10:00 صباحاً حتى 9:00 مساءً طوال أيام الأسبوع ما عدا الجمعة.
@@ -76,11 +78,16 @@ export function defaultAutomationSettings(env = process.env) {
     botpress: {
       enabled: parseBoolean(env.BOTPRESS_CLOUD_ENABLED, false),
       skipBroadcasts: parseBoolean(env.BOTPRESS_CLOUD_SKIP_BROADCASTS, true),
+      requireResolvedReentry: parseBoolean(env.BOTPRESS_CLOUD_REQUIRE_RESOLVED_REENTRY, true),
       workingHoursEnabled: parseBoolean(env.BOTPRESS_CLOUD_WORKING_HOURS_ENABLED, true),
       timezone: stringValue(env.BOTPRESS_CLOUD_TIMEZONE, "Africa/Cairo"),
       start: stringValue(env.BOTPRESS_CLOUD_START, "10:00"),
       end: stringValue(env.BOTPRESS_CLOUD_END, "21:00"),
       days: parseList(env.BOTPRESS_CLOUD_DAYS, DEFAULT_BOTPRESS_BUSINESS_DAYS),
+      inHoursQueueMessage: stringValue(
+        env.BOTPRESS_CLOUD_IN_HOURS_QUEUE_MESSAGE,
+        DEFAULT_BOTPRESS_IN_HOURS_QUEUE_MESSAGE
+      ),
       outsideHoursMessage: stringValue(
         env.BOTPRESS_CLOUD_OUTSIDE_HOURS_MESSAGE,
         DEFAULT_BOTPRESS_OUTSIDE_HOURS_MESSAGE
@@ -157,11 +164,13 @@ export function normalizeAutomationSettings(settings = {}, env = process.env) {
     botpress: {
       enabled: Boolean(botpress.enabled),
       skipBroadcasts: Boolean(botpress.skipBroadcasts),
+      requireResolvedReentry: Boolean(botpress.requireResolvedReentry),
       workingHoursEnabled: Boolean(botpress.workingHoursEnabled),
       timezone: stringValue(botpress.timezone, defaults.botpress.timezone),
       start: stringValue(botpress.start, defaults.botpress.start),
       end: stringValue(botpress.end, defaults.botpress.end),
       days: parseList(botpress.days, DEFAULT_BOTPRESS_BUSINESS_DAYS),
+      inHoursQueueMessage: stringValue(botpress.inHoursQueueMessage, defaults.botpress.inHoursQueueMessage),
       outsideHoursMessage: stringValue(botpress.outsideHoursMessage, defaults.botpress.outsideHoursMessage),
       outsideHoursMode: normalizeChoice(botpress.outsideHoursMode, ["send_message", "return_only"], "send_message")
     }

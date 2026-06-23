@@ -91,12 +91,13 @@ Useful Railway defaults:
 ```text
 BOTPRESS_CLOUD_ENABLED=false
 BOTPRESS_CLOUD_SKIP_BROADCASTS=true
+BOTPRESS_CLOUD_REQUIRE_RESOLVED_REENTRY=true
 BOTPRESS_CLOUD_WORKING_HOURS_ENABLED=true
 BOTPRESS_CLOUD_TIMEZONE=Africa/Cairo
 BOTPRESS_CLOUD_START=10:00
 BOTPRESS_CLOUD_END=21:00
 BOTPRESS_CLOUD_DAYS=0,1,2,3,4,6
-BOTPRESS_CLOUD_OUTSIDE_HOURS_MODE=send_message
+BOTPRESS_CLOUD_IN_HOURS_QUEUE_MESSAGE=سيتم التواصل معكم في أقرب وقت. نقدر صبركم.
 ```
 
 Minimal Botpress Execute Code payload:
@@ -115,7 +116,9 @@ await axios.post(
 );
 ```
 
-Outside Fahd working hours, the app sends only the outside-hours message and does not open the conversation, assign a team/agent, or add a private note. Broadcast handoffs are skipped when `isBroadcastReply=true` or a campaign/broadcast marker is sent in the payload.
+Broadcast handoffs are skipped when `isBroadcastReply=true` or a campaign/broadcast marker is sent in the payload.
+
+With `BOTPRESS_CLOUD_REQUIRE_RESOLVED_REENTRY=true`, the app only accepts Fahd handoffs for conversations that were marked `resolved` before the customer came back. If a configured agent is online after Fahd collects the customer details, the app opens the conversation, adds Fahd's private note, and assigns it to that agent. If no configured agent is online, the app assigns the conversation to the selected team, clears the old assignee, and sends either `BOTPRESS_CLOUD_IN_HOURS_QUEUE_MESSAGE` during business hours or `BOTPRESS_CLOUD_OUTSIDE_HOURS_MESSAGE` outside business hours.
 
 ## Chatwoot setup
 

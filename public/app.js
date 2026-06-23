@@ -383,13 +383,16 @@ Object.assign(translations.ar, {
   "Reopen router": "راوتر إعادة الفتح",
   "Fahd Botpress": "فهد Botpress",
   "Enable Fahd handoff": "تشغيل تسليم فهد",
+  "Require resolved re-entry": "تشغيل فهد بعد Resolved فقط",
   "Skip broadcast handoffs": "تجاهل تسليمات البرودكاست",
   "Fahd working hours": "مواعيد عمل فهد",
+  "In-hours queue message": "رسالة الانتظار داخل مواعيد العمل",
   "Outside-hours message": "رسالة خارج مواعيد العمل",
   "Outside-hours mode": "تصرف خارج مواعيد العمل",
   "Send message only": "إرسال الرسالة فقط",
   "Return message to Botpress": "إرجاع الرسالة لـ Botpress",
   "Botpress should call /botpress-cloud with x-botpress-secret. Outside working hours, the app sends only this message and does not open, assign, or add a private note.": "Botpress ينادي /botpress-cloud مع x-botpress-secret. خارج مواعيد العمل، التطبيق يرسل الرسالة فقط ولا يفتح ولا يعمل تعيين ولا يضيف private note.",
+  "Botpress calls /botpress-cloud after Fahd collects the customer details. The app only handles resolved re-entry conversations; if no online agent is available it leaves the chat unassigned and sends the matching queue message.": "Botpress ينادي /botpress-cloud بعد ما فهد يجمع بيانات العميل. التطبيق يتعامل فقط مع محادثات رجعت بعد Resolved؛ لو مفيش موظف أونلاين يسيب الشات Unassigned ويبعت رسالة الانتظار المناسبة.",
   "Enable reopen router": "تشغيل راوتر إعادة الفتح",
   "Reopen team": "فريق إعادة الفتح",
   "Allowed reopen agents": "موظفين إعادة الفتح المسموح لهم",
@@ -604,10 +607,11 @@ function automationView() {
     <section class="panel" style="margin-top:16px">
       <div class="panel-header"><h2>${tr("Fahd Botpress")}</h2></div>
       <div class="panel-body">
-        <p class="notice">${tr("Botpress should call /botpress-cloud with x-botpress-secret. Outside working hours, the app sends only this message and does not open, assign, or add a private note.")}</p>
+        <p class="notice">${tr("Botpress calls /botpress-cloud after Fahd collects the customer details. The app only handles resolved re-entry conversations; if no online agent is available it leaves the chat unassigned and sends the matching queue message.")}</p>
         <div class="grid two">
           ${checkboxPanel([
             ["automationBotpressEnabled", "Enable Fahd handoff", botpress.enabled],
+            ["automationBotpressRequireResolvedReentry", "Require resolved re-entry", botpress.requireResolvedReentry],
             ["automationBotpressWorkingHoursEnabled", "Enable business hours", botpress.workingHoursEnabled],
             ["automationBotpressSkipBroadcasts", "Skip broadcast handoffs", botpress.skipBroadcasts]
           ])}
@@ -617,7 +621,9 @@ function automationView() {
           ${inputField("automationBotpressTimezone", "Timezone", botpress.timezone || "Africa/Cairo")}
           ${inputField("automationBotpressStart", "Start time", botpress.start || "10:00")}
           ${inputField("automationBotpressEnd", "End time", botpress.end || "21:00")}
-          ${selectField("automationBotpressOutsideHoursMode", "Outside-hours mode", [["send_message", "Send message only"], ["return_only", "Return message to Botpress"]], botpress.outsideHoursMode || "send_message")}
+        </div>
+        <div class="span-all">
+          ${textareaField("automationBotpressInHoursQueueMessage", "In-hours queue message", botpress.inHoursQueueMessage || "")}
         </div>
         <div class="span-all">
           ${textareaField("automationBotpressOutsideHoursMessage", "Outside-hours message", botpress.outsideHoursMessage || "")}
@@ -1265,13 +1271,15 @@ function getAutomationSettingsFromForm() {
     botpress: {
       enabled: checked("automationBotpressEnabled"),
       skipBroadcasts: checked("automationBotpressSkipBroadcasts"),
+      requireResolvedReentry: checked("automationBotpressRequireResolvedReentry"),
       workingHoursEnabled: checked("automationBotpressWorkingHoursEnabled"),
       timezone: value("automationBotpressTimezone"),
       start: value("automationBotpressStart"),
       end: value("automationBotpressEnd"),
       days: checkedValues("automationBotpressDays"),
+      inHoursQueueMessage: value("automationBotpressInHoursQueueMessage"),
       outsideHoursMessage: value("automationBotpressOutsideHoursMessage"),
-      outsideHoursMode: value("automationBotpressOutsideHoursMode")
+      outsideHoursMode: "send_message"
     }
   };
 }
@@ -1941,12 +1949,14 @@ function defaultClientAutomationSettings() {
     botpress: {
       enabled: false,
       skipBroadcasts: true,
+      requireResolvedReentry: true,
       workingHoursEnabled: true,
       timezone: "Africa/Cairo",
       start: "10:00",
       end: "21:00",
       days: ["0", "1", "2", "3", "4", "6"],
       outsideHoursMode: "send_message",
+      inHoursQueueMessage: "سيتم التواصل معكم في أقرب وقت.\nنقدر صبركم.",
       outsideHoursMessage: "شكراً لتواصلكم معنا،\n\nحالياً أنتم تتواصلون خارج أوقات العمل الرسمية، والتي تمتد من 10:00 صباحاً حتى 9:00 مساءً طوال أيام الأسبوع ما عدا الجمعة.\n\nتم استلام رسالتكم وسيقوم أحد أعضاء فريقنا بالتواصل معكم في أقرب وقت ممكن خلال ساعات العمل.\n\nمع خالص التقدير،\n\nفريق تشغيل إنجوسوفت"
     }
   };
