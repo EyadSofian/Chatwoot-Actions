@@ -119,7 +119,7 @@ function isSharedSecretAuthorized(req) {
   if (!secret || !req.url) return false;
 
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
-  if (!["/api/webhooks/chatwoot", "/botpress-cloud", "/api/botpress-cloud"].includes(url.pathname)) return false;
+  if (!["/api/webhooks/chatwoot", "/botpress-cloud", "/api/botpress-cloud", "/botpress/response"].includes(url.pathname)) return false;
 
   const suppliedSecret = getFirstHeader(req.headers["x-chatwoot-ops-secret"]) ||
     getFirstHeader(req.headers["x-botpress-secret"]) ||
