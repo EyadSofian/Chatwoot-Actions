@@ -183,7 +183,7 @@ test("handleBotpressCloudHandoff queues resolved reentry after hours when no onl
     });
 
     assert.equal(result.action, "botpress_cloud_handoff");
-    assert.equal(result.routing.action, "department_team_queue");
+    assert.equal(result.routing.action, "department_team_unassigned");
     assert.equal(result.queueMessageId, 702);
     assert.equal(statusCalled, true);
     assert.deepEqual(assignments, [{ team_id: 3 }, { assignee_id: null }]);
