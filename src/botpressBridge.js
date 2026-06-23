@@ -50,6 +50,20 @@ function gateInfo(p) {
   return { status, assigneeId: assignee?.id || null, labels, inboxId };
 }
 
+function getSenderPhone(body = {}) {
+  const sender = body.sender || body.conversation?.meta?.sender || body.conversation?.contact || {};
+  return String(
+    sender.phone_number ||
+    sender.phoneNumber ||
+    sender.phone ||
+    sender.additional_attributes?.phone_number ||
+    sender.additional_attributes?.phone ||
+    sender.custom_attributes?.phone_number ||
+    sender.custom_attributes?.phone ||
+    ""
+  ).trim();
+}
+
 async function fillFromApi(convId, g) {
   if (g.labels.length || g.assigneeId) return g;
   try {
@@ -94,6 +108,7 @@ export async function forwardIncomingToBotpress(body = {}) {
     chatwootConversationId: Number(convId),
     chatwootUserId: userId,
     senderName: body.sender?.name || "",
+    senderPhone: getSenderPhone(body),
     conversationStatus: g.status,
     assigneeId: g.assigneeId,
     labels: g.labels,
