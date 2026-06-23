@@ -192,6 +192,17 @@ export class ChatwootClient {
     return this.request(this.accountPath(`/conversations/${conversationId}/messages`), { query });
   }
 
+  conversationLabels(conversationId) {
+    return this.request(this.accountPath(`/conversations/${conversationId}/labels`));
+  }
+
+  updateConversationLabels(conversationId, labels) {
+    return this.request(this.accountPath(`/conversations/${conversationId}/labels`), {
+      method: "POST",
+      body: { labels }
+    });
+  }
+
   createMessage(conversationId, payload) {
     return this.request(this.accountPath(`/conversations/${conversationId}/messages`), {
       method: "POST",

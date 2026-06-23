@@ -91,6 +91,7 @@ test("handleBotpressCloudHandoff queues resolved reentry after hours when no onl
   const assignments = [];
   let statusCalled = false;
   let customAttributesBody = null;
+  let labelsBody = null;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
     res.setHeader("content-type", "application/json; charset=utf-8");
@@ -100,6 +101,7 @@ test("handleBotpressCloudHandoff queues resolved reentry after hours when no onl
         id: 33,
         status: "open",
         inbox_id: 2,
+        labels: ["needs-bot", "vip"],
         custom_attributes: {
           engosoft_department_route_state: "resolved",
           engosoft_department_prompt_next: true
@@ -109,6 +111,17 @@ test("handleBotpressCloudHandoff queues resolved reentry after hours when no onl
           inbox: { id: 2, name: "WhatsApp" }
         }
       }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/labels" && req.method === "GET") {
+      res.end(JSON.stringify({ payload: ["needs-bot", "vip"] }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/labels" && req.method === "POST") {
+      labelsBody = await readRequestJson(req);
+      res.end(JSON.stringify({ payload: labelsBody.labels }));
       return;
     }
 
@@ -177,6 +190,7 @@ test("handleBotpressCloudHandoff queues resolved reentry after hours when no onl
         days: ["0", "1", "2", "3", "4", "6"],
         inHoursQueueMessage: "please wait",
         outsideHoursMessage: "outside hours",
+        clearLabel: "needs-bot",
         now: () => new Date("2026-06-14T19:30:00Z")
       },
       audit: false
@@ -186,7 +200,9 @@ test("handleBotpressCloudHandoff queues resolved reentry after hours when no onl
     assert.equal(result.routing.action, "department_team_unassigned");
     assert.equal(result.queueMessageId, 702);
     assert.equal(statusCalled, true);
+    assert.equal(result.removedBotLabel, true);
     assert.deepEqual(assignments, [{ team_id: 3 }, { assignee_id: null }]);
+    assert.deepEqual(labelsBody, { labels: ["vip"] });
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "routed");
     assert.deepEqual(messages, [{
       content: "📝 **ملخص فهد:**\ncustomer asked after hours",

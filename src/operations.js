@@ -573,11 +573,14 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
     );
   }
 
+  const removedBotLabel = await removeBotHandoffLabel(client, conversation, botpressConfig);
+
   await auditDepartmentRouter("department_router_botpress_cloud_handoff", {
     conversationId,
     department,
     noteMessageId: noteMessage?.id || null,
     queueMessageId: queueMessage?.id || null,
+    removedBotLabel,
     routingAction: routing?.action || null,
     routingReason: routing?.reason || null,
     source: body.source || "botpress-cloud"
@@ -590,6 +593,7 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
     department,
     noteMessageId: noteMessage?.id || null,
     queueMessageId: queueMessage?.id || null,
+    removedBotLabel,
     statusChanged: Boolean(statusResult),
     routing
   };
@@ -937,6 +941,7 @@ function buildBotpressCloudConfig(options = {}) {
       process.env.BOTPRESS_CLOUD_REQUIRE_RESOLVED_REENTRY,
       true
     ),
+    clearLabel: String(options.clearLabel ?? process.env.BOTPRESS_CLOUD_CLEAR_LABEL ?? process.env.BRIDGE_REQUIRE_LABEL ?? "needs-bot").trim(),
     inHoursQueueMessage: String(options.inHoursQueueMessage ?? process.env.BOTPRESS_CLOUD_IN_HOURS_QUEUE_MESSAGE ??
       "سيتم التواصل معكم في أقرب وقت.\nنقدر صبركم."),
     outsideHoursMessage: String(options.outsideHoursMessage ?? process.env.BOTPRESS_CLOUD_OUTSIDE_HOURS_MESSAGE ??
@@ -2014,6 +2019,34 @@ function getBotpressQueueMessage(botpressConfig) {
   return outsideWorkingHours
     ? botpressConfig.outsideHoursMessage
     : botpressConfig.inHoursQueueMessage;
+}
+
+async function removeBotHandoffLabel(client, conversation, botpressConfig) {
+  const label = botpressConfig.clearLabel;
+  if (!label) return false;
+
+  try {
+    const response = await client.conversationLabels(conversation.id);
+    const labels = normalizeLabelNames(response?.payload || response || conversation?.labels || []);
+    if (!labels.includes(label)) return false;
+    const nextLabels = labels.filter(item => item !== label);
+    await client.updateConversationLabels(conversation.id, nextLabels);
+    conversation.labels = nextLabels;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeLabelNames(labels) {
+  if (!Array.isArray(labels)) return [];
+  return labels
+    .map(label => {
+      if (typeof label === "string") return label;
+      return label?.title || label?.name || label?.label || "";
+    })
+    .map(label => String(label).trim())
+    .filter(Boolean);
 }
 
 function isBotpressBroadcast(body) {
