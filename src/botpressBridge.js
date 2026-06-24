@@ -1,4 +1,4 @@
-import { isBroadcastConversation, makeClient } from "./operations.js";
+import { conversationHasResolveActivity, isBroadcastConversation, makeClient } from "./operations.js";
 
 const BOTPRESS_WEBHOOK_URL = process.env.BOTPRESS_WEBHOOK_URL || "";
 const BOTPRESS_PAT = process.env.BOTPRESS_PAT || "";
@@ -103,7 +103,11 @@ export async function forwardIncomingToBotpress(body = {}) {
 
   // Broadcast/campaign conversations are handled by the team, not Fahd. Skip
   // them even when an automation stamped needs-bot on every new conversation.
-  if (SKIP_BROADCASTS &&
+  // Once an agent has resolved the conversation, the campaign episode is over:
+  // release it so the customer's next message flows to Fahd normally.
+  const releasedAfterResolve = conversationHasResolveActivity(g.raw) ||
+    conversationHasResolveActivity(body.conversation);
+  if (SKIP_BROADCASTS && !releasedAfterResolve &&
     (isBroadcastConversation(body.conversation, CAMPAIGN_MARKER_TTL_SECONDS) ||
       isBroadcastConversation(g.raw, CAMPAIGN_MARKER_TTL_SECONDS))) {
     return { ok: true, skipped: true, reason: "broadcast", conversationId: convId };

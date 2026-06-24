@@ -1944,6 +1944,14 @@ function isResolvedActivityMessage(message) {
     content.includes("تم اغلاق المحادثة");
 }
 
+// True when the conversation's recent messages contain a resolve activity,
+// i.e. an agent closed it at least once. The Botpress bridge uses this so a
+// broadcast conversation that was already handled and resolved is released
+// back to the normal flow (Fahd) on the customer's next message.
+export function conversationHasResolveActivity(conversation) {
+  return normalizeRows(conversation?.messages).some(message => isResolvedActivityMessage(message));
+}
+
 export function parseDepartmentSelection(content) {
   const normalized = normalizeDepartmentText(content);
   if (["1", "01"].includes(normalized)) return "sales";
