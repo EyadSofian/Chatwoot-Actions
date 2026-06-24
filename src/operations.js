@@ -676,16 +676,17 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
         [DEPARTMENT_ATTRIBUTES.manualAssignment]: false
       });
       const resolvedAssigneeId = getConversationAssigneeId(conversation);
-      let unassignResult = null;
-      if (resolvedAssigneeId) {
-        unassignResult = await client.assignConversation(conversationId, { assignee_id: null });
-      }
+      const resolvedTeamId = getConversationTeamId(conversation);
+      const clearAssignment = await clearResolvedConversationAssignment(client, conversationId, conversation);
       await auditDepartmentRouter("department_router_marked_for_reentry", {
         conversationId,
         inboxId,
         status,
         resolvedAssigneeId: resolvedAssigneeId || null,
-        unassignedOnResolve: Boolean(unassignResult),
+        resolvedTeamId: resolvedTeamId || null,
+        unassignedOnResolve: clearAssignment.assigneeCleared,
+        teamClearedOnResolve: clearAssignment.teamCleared,
+        teamClearError: clearAssignment.teamError || null,
         customAttributes
       }, config.audit);
       return {
@@ -695,7 +696,9 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
         conversationId,
         inboxId,
         status,
-        unassignedOnResolve: Boolean(unassignResult)
+        unassignedOnResolve: clearAssignment.assigneeCleared,
+        teamClearedOnResolve: clearAssignment.teamCleared,
+        teamClearError: clearAssignment.teamError || null
       };
     }
 
@@ -1368,6 +1371,28 @@ async function sendDepartmentMessage(client, conversationId, content) {
   });
 }
 
+async function clearResolvedConversationAssignment(client, conversationId, conversation) {
+  const result = {
+    assigneeCleared: false,
+    teamCleared: false,
+    teamError: null
+  };
+
+  if (getConversationAssigneeId(conversation)) {
+    await client.assignConversation(conversationId, { assignee_id: null });
+    result.assigneeCleared = true;
+  }
+
+  try {
+    await client.assignConversation(conversationId, { team_id: null });
+    result.teamCleared = true;
+  } catch (error) {
+    result.teamError = error.message || "Failed to clear team assignment";
+  }
+
+  return result;
+}
+
 async function routeConversationToDepartment(
   client,
   conversation,
@@ -2032,6 +2057,16 @@ async function removeBotHandoffLabel(client, conversation, botpressConfig) {
   if (!label) return false;
 
   try {
+    const latestResponse = await client.conversationDetails(conversation.id);
+    const latestConversation = unwrapConversationResponse(latestResponse) || conversation;
+    const latestAttributes = getConversationCustomAttributes(latestConversation);
+    const latestState = String(latestAttributes[DEPARTMENT_ATTRIBUTES.state] || "").toLowerCase();
+    const promptNext = parseBooleanOption(latestAttributes[DEPARTMENT_ATTRIBUTES.promptNext], undefined, false);
+    const latestStatus = String(latestConversation.status || "").toLowerCase();
+    if (latestStatus === "resolved" || latestState === "resolved" || promptNext) {
+      return false;
+    }
+
     const response = await client.conversationLabels(conversation.id);
     const labels = normalizeLabelNames(response?.payload || response || conversation?.labels || []);
     if (!labels.includes(label)) return false;

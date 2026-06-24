@@ -92,6 +92,10 @@ test("handleBotpressCloudHandoff queues resolved reentry after hours when no onl
   let statusCalled = false;
   let customAttributesBody = null;
   let labelsBody = null;
+  let customAttributes = {
+    engosoft_department_route_state: "resolved",
+    engosoft_department_prompt_next: true
+  };
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
     res.setHeader("content-type", "application/json; charset=utf-8");
@@ -102,10 +106,7 @@ test("handleBotpressCloudHandoff queues resolved reentry after hours when no onl
         status: "open",
         inbox_id: 2,
         labels: ["needs-bot", "vip"],
-        custom_attributes: {
-          engosoft_department_route_state: "resolved",
-          engosoft_department_prompt_next: true
-        },
+        custom_attributes: customAttributes,
         meta: {
           assignee: { id: 4, name: "Old Agent" },
           inbox: { id: 2, name: "WhatsApp" }
@@ -155,6 +156,7 @@ test("handleBotpressCloudHandoff queues resolved reentry after hours when no onl
     }
     if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
       customAttributesBody = await readRequestJson(req);
+      customAttributes = customAttributesBody.custom_attributes;
       res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
       return;
     }
@@ -326,6 +328,102 @@ test("handleBotpressCloudHandoff assigns complaints to the configured owner even
     assert.equal(mock.statusCalled, true);
   } finally {
     await new Promise(resolve => mock.server.close(resolve));
+  }
+});
+
+test("handleBotpressCloudHandoff keeps needs-bot when a concurrent resolve marks the next reentry", async () => {
+  let detailsCount = 0;
+  const messages = [];
+  const assignments = [];
+  let labelsBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      detailsCount += 1;
+      res.end(JSON.stringify({
+        id: 33,
+        status: detailsCount === 1 ? "open" : "resolved",
+        inbox_id: 2,
+        labels: ["needs-bot", "vip"],
+        custom_attributes: {
+          engosoft_department_route_state: "resolved",
+          engosoft_department_prompt_next: true
+        },
+        meta: {
+          assignee: { id: 4, name: "Old Agent" },
+          inbox: { id: 2, name: "WhatsApp" }
+        }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/labels" && req.method === "GET") {
+      res.end(JSON.stringify({ payload: ["needs-bot", "vip"] }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/labels" && req.method === "POST") {
+      labelsBody = await readRequestJson(req);
+      res.end(JSON.stringify({ payload: labelsBody.labels }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 700 + messages.length }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/toggle_status" && req.method === "POST") {
+      res.end(JSON.stringify({ status: "open" }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/teams/3/team_members" && req.method === "GET") {
+      res.end(JSON.stringify([{ id: 21, name: "Abdelrahman Adel", availability_status: "offline" }]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/inbox_members/2" && req.method === "GET") {
+      res.end(JSON.stringify([{ id: 21, name: "Abdelrahman Adel", availability_status: "offline" }]));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignments.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      res.end(JSON.stringify({ custom_attributes: (await readRequestJson(req)).custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleBotpressCloudHandoff({
+      conversationId: 33,
+      summary: "late handoff",
+      department: "operations"
+    }, botpressHandoffOptions(port, {
+      inHoursQueueMessage: "please wait",
+      now: () => new Date("2026-06-14T12:00:00Z")
+    }));
+
+    assert.equal(result.action, "botpress_cloud_handoff");
+    assert.equal(result.removedBotLabel, false);
+    assert.equal(labelsBody, null);
+    assert.deepEqual(assignments, [{ team_id: 3 }, { assignee_id: null }]);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
   }
 });
 
@@ -2002,7 +2100,8 @@ test("handleDepartmentRouterWebhook marks resolved conversations to prompt on th
     assert.equal(result.handled, true);
     assert.equal(result.action, "marked_for_reentry");
     assert.equal(result.unassignedOnResolve, true);
-    assert.deepEqual(assignments, [{ assignee_id: null }]);
+    assert.equal(result.teamClearedOnResolve, true);
+    assert.deepEqual(assignments, [{ assignee_id: null }, { team_id: null }]);
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_prompt_next, true);
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "resolved");
     // Resolving releases the manual-assignment lock so the reopen reroutes.
@@ -2098,6 +2197,7 @@ test("handleDepartmentRouterWebhook prompts a resolved conversation again on the
     }, options);
 
     assert.equal(resolved.action, "marked_for_reentry");
+    assert.equal(resolved.teamClearedOnResolve, true);
     assert.equal(customAttributes.engosoft_department_prompt_next, true);
     assert.equal(customAttributes.engosoft_department_auto_assigned_agent_id, null);
     assert.equal(customAttributes.engosoft_department_manual_assignment, false);
@@ -2109,7 +2209,7 @@ test("handleDepartmentRouterWebhook prompts a resolved conversation again on the
 
     assert.equal(prompted.action, "department_prompt_sent");
     assert.equal(prompted.reason, "resolved_conversation_reopened");
-    assert.deepEqual(assignments, [{ assignee_id: null }]);
+    assert.deepEqual(assignments, [{ assignee_id: null }, { team_id: null }]);
     assert.equal(outgoingMessages.length, 1);
     assert.match(outgoingMessages[0].content, /اضغط 1/);
     assert.equal(customAttributes.engosoft_department_route_state, "pending");
@@ -3028,6 +3128,10 @@ function createBotpressHandoffMock({
     assignments: [],
     statusCalled: false,
     customAttributesBody: null,
+    customAttributes: {
+      engosoft_department_route_state: "resolved",
+      engosoft_department_prompt_next: true
+    },
     labelsBody: null,
     server: null
   };
@@ -3042,10 +3146,7 @@ function createBotpressHandoffMock({
         status: "open",
         inbox_id: 2,
         labels,
-        custom_attributes: {
-          engosoft_department_route_state: "resolved",
-          engosoft_department_prompt_next: true
-        },
+        custom_attributes: state.customAttributes,
         meta: {
           assignee: { id: 4, name: "Old Agent" },
           inbox: { id: 2, name: "WhatsApp" }
@@ -3100,6 +3201,7 @@ function createBotpressHandoffMock({
 
     if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
       state.customAttributesBody = await readRequestJson(req);
+      state.customAttributes = state.customAttributesBody.custom_attributes;
       res.end(JSON.stringify({ custom_attributes: state.customAttributesBody.custom_attributes }));
       return;
     }
