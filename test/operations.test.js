@@ -180,6 +180,14 @@ test("handleBotpressCloudHandoff queues resolved reentry after hours when no onl
       businessStart: "10:00",
       businessEnd: "21:00",
       businessDays: ["0", "1", "2", "3", "4", "6"],
+      businessHours: {
+        enabled: true,
+        timezone: "Africa/Cairo",
+        startMinutes: 10 * 60,
+        endMinutes: 21 * 60,
+        days: new Set([0, 1, 2, 3, 4, 6]),
+        now: () => new Date("2026-06-14T19:30:00Z")
+      },
       botpress: {
         enabled: true,
         requireResolvedReentry: true,
@@ -205,7 +213,7 @@ test("handleBotpressCloudHandoff queues resolved reentry after hours when no onl
     assert.deepEqual(labelsBody, { labels: ["vip"] });
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "routed");
     assert.deepEqual(messages, [{
-      content: "📝 **ملخص فهد:**\ncustomer asked after hours",
+      content: "\u{1F4DD} **\u0645\u0644\u062E\u0635 \u0641\u0647\u062F:**\ncustomer asked after hours",
       private: true,
       message_type: "outgoing",
       content_type: "text",
@@ -219,6 +227,73 @@ test("handleBotpressCloudHandoff queues resolved reentry after hours when no onl
     }]);
   } finally {
     await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleBotpressCloudHandoff assigns resolved reentry to an online operations agent", async () => {
+  const mock = createBotpressHandoffMock({
+    teamAgents: [{ id: 21, name: "Abdelrahman Adel", availability_status: "online" }],
+    inboxAgents: [{ id: 21, name: "Abdelrahman Adel", availability_status: "online" }]
+  });
+
+  await new Promise(resolve => mock.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = mock.server.address();
+    const result = await handleBotpressCloudHandoff({
+      conversationId: 33,
+      summary: "customer needs operations support",
+      department: "operations"
+    }, botpressHandoffOptions(port, {
+      now: () => new Date("2026-06-14T12:00:00Z")
+    }));
+
+    assert.equal(result.action, "botpress_cloud_handoff");
+    assert.equal(result.routing.action, "department_assigned");
+    assert.equal(result.routing.toAgentId, 21);
+    assert.equal(result.queueMessageId, null);
+    assert.equal(result.removedBotLabel, true);
+    assert.deepEqual(mock.assignments, [{ team_id: 3 }, { assignee_id: 21 }]);
+    assert.deepEqual(mock.labelsBody, { labels: ["vip"] });
+    assert.equal(mock.messages.length, 1);
+    assert.equal(mock.statusCalled, true);
+  } finally {
+    await new Promise(resolve => mock.server.close(resolve));
+  }
+});
+
+test("handleBotpressCloudHandoff queues resolved reentry during hours when no operations agent is online", async () => {
+  const mock = createBotpressHandoffMock({
+    teamAgents: [{ id: 21, name: "Abdelrahman Adel", availability_status: "offline" }],
+    inboxAgents: [{ id: 21, name: "Abdelrahman Adel", availability_status: "offline" }]
+  });
+
+  await new Promise(resolve => mock.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = mock.server.address();
+    const result = await handleBotpressCloudHandoff({
+      conversationId: 33,
+      summary: "customer needs operations support",
+      department: "operations"
+    }, botpressHandoffOptions(port, {
+      inHoursQueueMessage: "please wait",
+      outsideHoursMessage: "outside hours",
+      now: () => new Date("2026-06-14T12:00:00Z")
+    }));
+
+    assert.equal(result.action, "botpress_cloud_handoff");
+    assert.equal(result.routing.action, "department_team_queue");
+    assert.equal(result.routing.toAgentId, null);
+    assert.equal(result.queueMessageId, 702);
+    assert.equal(result.removedBotLabel, true);
+    assert.deepEqual(mock.assignments, [{ team_id: 3 }, { assignee_id: null }]);
+    assert.deepEqual(mock.labelsBody, { labels: ["vip"] });
+    assert.deepEqual(mock.messages.map(item => item.content), [
+      "\u{1F4DD} **\u0645\u0644\u062E\u0635 \u0641\u0647\u062F:**\ncustomer needs operations support",
+      "please wait"
+    ]);
+    assert.equal(mock.statusCalled, true);
+  } finally {
+    await new Promise(resolve => mock.server.close(resolve));
   }
 });
 
@@ -2894,5 +2969,130 @@ function createMemoryDepartmentStateStore(initial = {}) {
       rows.set(key, row);
       return { ...row };
     }
+  };
+}
+
+function createBotpressHandoffMock({
+  teamAgents = [],
+  inboxAgents = [],
+  labels = ["needs-bot", "vip"]
+} = {}) {
+  const state = {
+    messages: [],
+    assignments: [],
+    statusCalled: false,
+    customAttributesBody: null,
+    labelsBody: null,
+    server: null
+  };
+
+  state.server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 2,
+        labels,
+        custom_attributes: {
+          engosoft_department_route_state: "resolved",
+          engosoft_department_prompt_next: true
+        },
+        meta: {
+          assignee: { id: 4, name: "Old Agent" },
+          inbox: { id: 2, name: "WhatsApp" }
+        }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/labels" && req.method === "GET") {
+      res.end(JSON.stringify({ payload: labels }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/labels" && req.method === "POST") {
+      state.labelsBody = await readRequestJson(req);
+      res.end(JSON.stringify({ payload: state.labelsBody.labels }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      state.messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 700 + state.messages.length }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/toggle_status" && req.method === "POST") {
+      state.statusCalled = true;
+      res.end(JSON.stringify({ status: "open" }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/teams/3/team_members" && req.method === "GET") {
+      res.end(JSON.stringify(teamAgents));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/inbox_members/2" && req.method === "GET") {
+      res.end(JSON.stringify(inboxAgents));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      state.assignments.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      state.customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: state.customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  return state;
+}
+
+function botpressHandoffOptions(port, botpressOverrides = {}) {
+  const now = botpressOverrides.now;
+  return {
+    connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+    enabled: true,
+    operationsTeamId: "3",
+    operationsAgentIds: ["21"],
+    businessHoursEnabled: true,
+    businessTimezone: "Africa/Cairo",
+    businessStart: "10:00",
+    businessEnd: "21:00",
+    businessDays: ["0", "1", "2", "3", "4", "6"],
+    businessHours: {
+      enabled: true,
+      timezone: "Africa/Cairo",
+      startMinutes: 10 * 60,
+      endMinutes: 21 * 60,
+      days: new Set([0, 1, 2, 3, 4, 6]),
+      ...(now ? { now } : {})
+    },
+    botpress: {
+      enabled: true,
+      requireResolvedReentry: true,
+      workingHoursEnabled: true,
+      timezone: "Africa/Cairo",
+      start: "10:00",
+      end: "21:00",
+      days: ["0", "1", "2", "3", "4", "6"],
+      inHoursQueueMessage: "please wait",
+      outsideHoursMessage: "outside hours",
+      clearLabel: "needs-bot",
+      ...botpressOverrides
+    },
+    audit: false
   };
 }
