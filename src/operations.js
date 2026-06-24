@@ -545,7 +545,10 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
     if (sendCustomerMessage && config.complaintReceivedText) {
       await sendDepartmentMessage(client, conversationId, config.complaintReceivedText);
     }
-    routing = await routeComplaintToAgent(client, conversation, config, "botpress_cloud_handoff", { onlineOnly: false });
+    routing = await routeComplaintToAgent(client, conversation, config, "botpress_cloud_handoff", {
+      onlineOnly: false,
+      assignAgent: isWithinBusinessHours(config.businessHours)
+    });
   } else {
     routing = await routeConversationToDepartment(
       client,
@@ -555,7 +558,9 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
       "botpress_cloud_handoff",
       {
         allowReassignment: true,
-        agentMode: "online",
+        // Sales routes to a Resale agent whether online or offline (per spec);
+        // operations follows agent online status. Mirrors handleDepartmentSelection.
+        agentMode: department === "sales" && config.salesAssignmentMode !== "online" ? "any_status" : "online",
         sendConfirmation: false
       }
     );
@@ -1463,13 +1468,15 @@ async function routeConversationToDepartment(
     }
   }
 
-  // Decide whether to assign a specific agent. When business hours are enabled,
-  // assign an online agent inside business hours and fall back to team-only
-  // (Unassigned) outside business hours. Otherwise use the static flag.
-  const assignAgentNow = agentMode === "any_status"
-    ? true
-    : config.businessHours?.enabled
-      ? isWithinBusinessHours(config.businessHours)
+  // Decide whether to assign a specific agent. Business hours gate every mode:
+  // inside business hours we assign (agentMode then decides online-only vs any
+  // status); outside them — including non-working days like Friday — we fall
+  // back to team-only (Unassigned). When business hours are disabled, any_status
+  // always assigns and the rest use the static flag.
+  const assignAgentNow = config.businessHours?.enabled
+    ? isWithinBusinessHours(config.businessHours)
+    : agentMode === "any_status"
+      ? true
       : config.assignAgent;
 
   // Team-only mode: route to the correct team and leave the conversation
@@ -1597,13 +1604,18 @@ export function filterDepartmentAgents(teamAgentsResponse, inboxAgentsResponse, 
   });
 }
 
-async function routeComplaintToAgent(client, conversation, config, reason, { onlineOnly = false } = {}) {
+async function routeComplaintToAgent(client, conversation, config, reason, { onlineOnly = false, assignAgent = true } = {}) {
   const conversationId = conversation.id;
   const inboxId = getConversationInboxId(conversation);
   const teamId = config.operationsTeamId;
   if (!teamId) throw new Error("Missing operations team id for complaint router.");
 
-  const resolvedAgent = await resolveComplaintAgent(client, config, { includeAvailability: onlineOnly });
+  // When assignAgent is false (e.g. outside business hours / on a non-working
+  // day) the complaint is queued to the team Unassigned instead of pinned to
+  // the complaint owner, who would otherwise receive it while off.
+  const resolvedAgent = assignAgent
+    ? await resolveComplaintAgent(client, config, { includeAvailability: onlineOnly })
+    : null;
   const targetAgent = resolvedAgent && (!onlineOnly || getAgentAvailability(resolvedAgent, "offline") === "online")
     ? resolvedAgent
     : null;
@@ -1972,7 +1984,36 @@ function getBotpressSummary(body) {
   ).trim();
 }
 
-function getBotpressDepartment(body) {
+// Keyword sets shared by the explicit-field match and the summary inference.
+// Multi-word entries are matched as substrings; single words match whole tokens
+// so a summary line like "الطلب/المشكلة: ..." never trips the operations match.
+const DEPARTMENT_KEYWORDS = {
+  sales: ["resale", "re sale", "sales", "sale", "مبيعات", "المبيعات", "سيلز", "ريسيل"],
+  operations: ["operation", "operations", "ops", "support", "trainee support", "دعم المتدربين", "دعم", "عمليات", "العمليات", "متدربين", "تشغيل"],
+  complaints: ["complaint", "complaints", "شكوى", "شكاوي", "الشكاوي", "الشكاوى", "اعتراض", "تصعيد"]
+};
+
+// Matches a free-form value (a field value or a summary line) to a department.
+// Single-word keywords must appear as a standalone token; phrases match anywhere.
+function matchDepartmentInText(value) {
+  const normalized = normalizeDepartmentText(value);
+  if (!normalized) return null;
+  const tokens = new Set(normalized.split(" "));
+  for (const [department, words] of Object.entries(DEPARTMENT_KEYWORDS)) {
+    for (const word of words) {
+      const normalizedWord = normalizeDepartmentText(word);
+      if (!normalizedWord) continue;
+      if (normalizedWord.includes(" ")) {
+        if (normalized.includes(normalizedWord)) return department;
+      } else if (tokens.has(normalizedWord)) {
+        return department;
+      }
+    }
+  }
+  return null;
+}
+
+function getExplicitBotpressDepartment(body) {
   const values = [
     body.department,
     body.route,
@@ -1980,23 +2021,49 @@ function getBotpressDepartment(body) {
     body.handoffDepartment,
     body.selection,
     body.choice,
+    body.intent,
     body.workflow?.department,
     body.workflow?.route,
     body.workflow?.targetDepartment,
     body.workflow?.handoffDepartment,
     body.workflow?.selection,
-    body.workflow?.choice
+    body.workflow?.choice,
+    body.workflow?.intent
   ];
 
   for (const value of values) {
-    const direct = normalizeDepartmentText(value);
-    if (!direct) continue;
-    if (["resale", "re-sale", "sales", "sale", "مبيعات", "المبيعات", "ريسيل"].includes(direct)) return "sales";
-    if (["operation", "operations", "ops", "support", "trainee support", "دعم", "دعم المتدربين", "عمليات", "العمليات"].includes(direct)) return "operations";
-    if (["complaint", "complaints", "شكوى", "شكاوي", "الشكاوي", "الشكاوى"].includes(direct)) return "complaints";
+    if (value == null || String(value).trim() === "") continue;
+    const matched = matchDepartmentInText(value);
+    if (matched) return matched;
     const parsed = parseDepartmentSelection(value);
     if (parsed) return parsed;
   }
+
+  return null;
+}
+
+// Pulls the department out of the structured summary ("النية: sales") that Fahd
+// writes. Tries the labelled intent line first, then scans the whole summary so
+// a clear complaint/sales/ops signal is still caught when the label is missing.
+const INTENT_LABEL_RE = /(?:الني[ةه]|intent|القسم|department)\s*[:：]\s*([^\n\r]+)/i;
+
+function inferDepartmentFromSummary(text) {
+  const raw = String(text || "");
+  if (!raw.trim()) return null;
+  const labelMatch = raw.match(INTENT_LABEL_RE);
+  if (labelMatch) {
+    const labelled = matchDepartmentInText(labelMatch[1]);
+    if (labelled) return labelled;
+  }
+  return matchDepartmentInText(raw);
+}
+
+export function getBotpressDepartment(body) {
+  const explicit = getExplicitBotpressDepartment(body);
+  if (explicit) return explicit;
+
+  const inferred = inferDepartmentFromSummary(getBotpressSummary(body));
+  if (inferred) return inferred;
 
   return "operations";
 }
@@ -2047,9 +2114,12 @@ function shouldSendBotpressQueueMessage(routing) {
 function getBotpressQueueMessage(botpressConfig) {
   const outsideWorkingHours = botpressConfig.workingHours?.enabled &&
     !isWithinBusinessHours(botpressConfig.workingHours);
-  return outsideWorkingHours
-    ? botpressConfig.outsideHoursMessage
-    : botpressConfig.inHoursQueueMessage;
+  if (outsideWorkingHours) {
+    // "return_only": route the conversation but stay silent outside hours.
+    if (botpressConfig.outsideHoursMode === "return_only") return "";
+    return botpressConfig.outsideHoursMessage;
+  }
+  return botpressConfig.inHoursQueueMessage;
 }
 
 async function removeBotHandoffLabel(client, conversation, botpressConfig) {

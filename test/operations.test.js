@@ -5,6 +5,7 @@ import {
   buildPhoneAssignPreview,
   extractPhoneNumbers,
   filterDepartmentAgents,
+  getBotpressDepartment,
   getOpenConversationReport,
   handleBotpressCloudHandoff,
   handleDepartmentRouterWebhook,
@@ -45,6 +46,35 @@ test("parseDepartmentSelection understands numeric, Arabic, and English replies"
   assert.equal(parseDepartmentSelection("دعم المتدربين"), "operations");
   assert.equal(parseDepartmentSelection("شكاوي"), "complaints");
   assert.equal(parseDepartmentSelection("محتاج مساعدة"), null);
+});
+
+test("getBotpressDepartment prefers an explicit department field", () => {
+  assert.equal(getBotpressDepartment({ department: "sales" }), "sales");
+  assert.equal(getBotpressDepartment({ workflow: { department: "complaints" } }), "complaints");
+  assert.equal(getBotpressDepartment({ department: "دعم المتدربين" }), "operations");
+  assert.equal(getBotpressDepartment({ intent: "sales" }), "sales");
+});
+
+test("getBotpressDepartment infers from the summary intent line when no field is sent", () => {
+  const salesSummary = "النية: sales\nالاسم: Eyad\nالدورة: CFM\nالطلب/المشكلة: يرغب العميل في شراء كورس CFM.";
+  assert.equal(getBotpressDepartment({ summary: salesSummary }), "sales");
+
+  const complaintSummary = "النية: complaints\nالطلب/المشكلة: شكوى من الخدمة";
+  assert.equal(getBotpressDepartment({ summary: complaintSummary }), "complaints");
+
+  const arabicIntent = "النية: مبيعات\nالاسم: Eyad";
+  assert.equal(getBotpressDepartment({ workflow: { chatSummary: arabicIntent } }), "sales");
+});
+
+test("getBotpressDepartment does not misread a request/problem label as operations", () => {
+  // The summary uses "الطلب/المشكلة:" as a label; that must not match operations.
+  const salesSummary = "النية: sales\nالطلب/المشكلة: عايز اشتري كورس";
+  assert.equal(getBotpressDepartment({ summary: salesSummary }), "sales");
+});
+
+test("getBotpressDepartment defaults to operations only as a last resort", () => {
+  assert.equal(getBotpressDepartment({ summary: "العميل طلب التحدث لموظف." }), "operations");
+  assert.equal(getBotpressDepartment({}), "operations");
 });
 
 test("filterDepartmentAgents enforces team, inbox, and configured agent ids", () => {
@@ -292,6 +322,73 @@ test("handleBotpressCloudHandoff queues resolved reentry during hours when no op
     assert.deepEqual(mock.messages.map(item => item.content), [
       "\u{1F4DD} **\u0645\u0644\u062E\u0635 \u0641\u0647\u062F:**\ncustomer needs operations support",
       "please wait"
+    ]);
+    assert.equal(mock.statusCalled, true);
+  } finally {
+    await new Promise(resolve => mock.server.close(resolve));
+  }
+});
+
+test("handleBotpressCloudHandoff queues complaints unassigned and notifies on a non-working day", async () => {
+  // Friday (2026-06-26) is excluded from the business days, so the complaint is
+  // queued to the team Unassigned instead of being pinned to the owner, and the
+  // outside-hours message tells the customer no one is available.
+  const mock = createBotpressHandoffMock({
+    agents: [{ id: 19, name: "Abdelrahman Tarek", availability_status: "online" }]
+  });
+
+  await new Promise(resolve => mock.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = mock.server.address();
+    const result = await handleBotpressCloudHandoff({
+      conversationId: 33,
+      summary: "customer submitted a formal complaint",
+      department: "complaints"
+    }, {
+      ...botpressHandoffOptions(port, {
+        outsideHoursMessage: "no one available now",
+        now: () => new Date("2026-06-26T12:00:00Z")
+      }),
+      complaintAgentName: "Abdelrahman Tarek"
+    });
+
+    assert.equal(result.routing.action, "complaint_team_queue");
+    assert.equal(result.routing.toAgentId, null);
+    assert.deepEqual(mock.assignments, [{ team_id: 3 }, { assignee_id: null }]);
+    assert.deepEqual(mock.messages.map(item => item.content), [
+      "\u{1F4DD} **ملخص فهد:**\ncustomer submitted a formal complaint",
+      "no one available now"
+    ]);
+  } finally {
+    await new Promise(resolve => mock.server.close(resolve));
+  }
+});
+
+test("handleBotpressCloudHandoff stays silent after hours when outsideHoursMode is return_only", async () => {
+  const mock = createBotpressHandoffMock({
+    teamAgents: [{ id: 21, name: "Abdelrahman Adel", availability_status: "offline" }],
+    inboxAgents: [{ id: 21, name: "Abdelrahman Adel", availability_status: "offline" }]
+  });
+
+  await new Promise(resolve => mock.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = mock.server.address();
+    const result = await handleBotpressCloudHandoff({
+      conversationId: 33,
+      summary: "customer asked after hours",
+      department: "operations"
+    }, botpressHandoffOptions(port, {
+      inHoursQueueMessage: "please wait",
+      outsideHoursMessage: "outside hours",
+      outsideHoursMode: "return_only",
+      now: () => new Date("2026-06-14T19:30:00Z")
+    }));
+
+    assert.equal(result.routing.action, "department_team_unassigned");
+    assert.equal(result.queueMessageId, null);
+    // Only the internal private note is posted; no customer-facing message.
+    assert.deepEqual(mock.messages.map(item => item.content), [
+      "\u{1F4DD} **ملخص فهد:**\ncustomer asked after hours"
     ]);
     assert.equal(mock.statusCalled, true);
   } finally {
