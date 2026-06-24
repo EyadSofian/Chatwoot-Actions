@@ -159,3 +159,82 @@ test("forwardIncomingToBotpress skips broadcast conversations even with the need
     await new Promise(resolve => botpressServer.close(resolve));
   }
 });
+
+test("forwardIncomingToBotpress releases a resolved broadcast conversation to Fahd", async () => {
+  let botpressBody = null;
+  const previousEnv = {
+    CHATWOOT_BASE_URL: process.env.CHATWOOT_BASE_URL,
+    CHATWOOT_ACCOUNT_ID: process.env.CHATWOOT_ACCOUNT_ID,
+    CHATWOOT_API_TOKEN: process.env.CHATWOOT_API_TOKEN,
+    BOTPRESS_WEBHOOK_URL: process.env.BOTPRESS_WEBHOOK_URL,
+    BOTPRESS_PAT: process.env.BOTPRESS_PAT,
+    BRIDGE_REQUIRE_LABEL: process.env.BRIDGE_REQUIRE_LABEL,
+    BOT_INBOX_IDS: process.env.BOT_INBOX_IDS
+  };
+
+  const chatwootServer = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/35" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 35,
+        status: "open",
+        inbox_id: 27,
+        labels: ["needs-bot"],
+        campaign_id: 7,
+        meta: { inbox: { id: 27, name: "WhatsApp" } },
+        messages: [
+          { id: 1, message_type: 2, content_type: "activity", content: "Conversation was marked resolved by Agent" },
+          { id: 2, message_type: 0, content: "أهلاً، عندي استفسار جديد" }
+        ]
+      }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  const botpressServer = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    botpressBody = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ ok: true }));
+  });
+
+  await new Promise(resolve => chatwootServer.listen(0, "127.0.0.1", resolve));
+  await new Promise(resolve => botpressServer.listen(0, "127.0.0.1", resolve));
+
+  try {
+    process.env.CHATWOOT_BASE_URL = `http://127.0.0.1:${chatwootServer.address().port}`;
+    process.env.CHATWOOT_ACCOUNT_ID = "1";
+    process.env.CHATWOOT_API_TOKEN = "test-token";
+    process.env.BOTPRESS_WEBHOOK_URL = `http://127.0.0.1:${botpressServer.address().port}/hook`;
+    process.env.BOTPRESS_PAT = "";
+    process.env.BRIDGE_REQUIRE_LABEL = "needs-bot";
+    process.env.BOT_INBOX_IDS = "27";
+
+    const { forwardIncomingToBotpress } = await import(`../src/botpressBridge.js?released-gate=${Date.now()}`);
+    const result = await forwardIncomingToBotpress({
+      id: "message-3",
+      message_type: "incoming",
+      private: false,
+      content: "أهلاً، عندي استفسار جديد",
+      conversation: { id: 35, inbox_id: 27, labels: ["needs-bot"] },
+      sender: { id: 12, name: "Returning Lead" }
+    });
+
+    assert.equal(result.forwarded, true);
+    assert.equal(result.conversationId, "35");
+    assert.ok(botpressBody, "Botpress should receive the released conversation");
+  } finally {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await new Promise(resolve => chatwootServer.close(resolve));
+    await new Promise(resolve => botpressServer.close(resolve));
+  }
+});
