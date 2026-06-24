@@ -329,6 +329,41 @@ test("handleBotpressCloudHandoff queues resolved reentry during hours when no op
   }
 });
 
+test("handleBotpressCloudHandoff queues complaints unassigned and notifies on a non-working day", async () => {
+  // Friday (2026-06-26) is excluded from the business days, so the complaint is
+  // queued to the team Unassigned instead of being pinned to the owner, and the
+  // outside-hours message tells the customer no one is available.
+  const mock = createBotpressHandoffMock({
+    agents: [{ id: 19, name: "Abdelrahman Tarek", availability_status: "online" }]
+  });
+
+  await new Promise(resolve => mock.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = mock.server.address();
+    const result = await handleBotpressCloudHandoff({
+      conversationId: 33,
+      summary: "customer submitted a formal complaint",
+      department: "complaints"
+    }, {
+      ...botpressHandoffOptions(port, {
+        outsideHoursMessage: "no one available now",
+        now: () => new Date("2026-06-26T12:00:00Z")
+      }),
+      complaintAgentName: "Abdelrahman Tarek"
+    });
+
+    assert.equal(result.routing.action, "complaint_team_queue");
+    assert.equal(result.routing.toAgentId, null);
+    assert.deepEqual(mock.assignments, [{ team_id: 3 }, { assignee_id: null }]);
+    assert.deepEqual(mock.messages.map(item => item.content), [
+      "\u{1F4DD} **ملخص فهد:**\ncustomer submitted a formal complaint",
+      "no one available now"
+    ]);
+  } finally {
+    await new Promise(resolve => mock.server.close(resolve));
+  }
+});
+
 test("handleBotpressCloudHandoff stays silent after hours when outsideHoursMode is return_only", async () => {
   const mock = createBotpressHandoffMock({
     teamAgents: [{ id: 21, name: "Abdelrahman Adel", availability_status: "offline" }],

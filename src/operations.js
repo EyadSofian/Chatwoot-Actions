@@ -545,7 +545,10 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
     if (sendCustomerMessage && config.complaintReceivedText) {
       await sendDepartmentMessage(client, conversationId, config.complaintReceivedText);
     }
-    routing = await routeComplaintToAgent(client, conversation, config, "botpress_cloud_handoff", { onlineOnly: false });
+    routing = await routeComplaintToAgent(client, conversation, config, "botpress_cloud_handoff", {
+      onlineOnly: false,
+      assignAgent: isWithinBusinessHours(config.businessHours)
+    });
   } else {
     routing = await routeConversationToDepartment(
       client,
@@ -1465,13 +1468,15 @@ async function routeConversationToDepartment(
     }
   }
 
-  // Decide whether to assign a specific agent. When business hours are enabled,
-  // assign an online agent inside business hours and fall back to team-only
-  // (Unassigned) outside business hours. Otherwise use the static flag.
-  const assignAgentNow = agentMode === "any_status"
-    ? true
-    : config.businessHours?.enabled
-      ? isWithinBusinessHours(config.businessHours)
+  // Decide whether to assign a specific agent. Business hours gate every mode:
+  // inside business hours we assign (agentMode then decides online-only vs any
+  // status); outside them — including non-working days like Friday — we fall
+  // back to team-only (Unassigned). When business hours are disabled, any_status
+  // always assigns and the rest use the static flag.
+  const assignAgentNow = config.businessHours?.enabled
+    ? isWithinBusinessHours(config.businessHours)
+    : agentMode === "any_status"
+      ? true
       : config.assignAgent;
 
   // Team-only mode: route to the correct team and leave the conversation
@@ -1599,13 +1604,18 @@ export function filterDepartmentAgents(teamAgentsResponse, inboxAgentsResponse, 
   });
 }
 
-async function routeComplaintToAgent(client, conversation, config, reason, { onlineOnly = false } = {}) {
+async function routeComplaintToAgent(client, conversation, config, reason, { onlineOnly = false, assignAgent = true } = {}) {
   const conversationId = conversation.id;
   const inboxId = getConversationInboxId(conversation);
   const teamId = config.operationsTeamId;
   if (!teamId) throw new Error("Missing operations team id for complaint router.");
 
-  const resolvedAgent = await resolveComplaintAgent(client, config, { includeAvailability: onlineOnly });
+  // When assignAgent is false (e.g. outside business hours / on a non-working
+  // day) the complaint is queued to the team Unassigned instead of pinned to
+  // the complaint owner, who would otherwise receive it while off.
+  const resolvedAgent = assignAgent
+    ? await resolveComplaintAgent(client, config, { includeAvailability: onlineOnly })
+    : null;
   const targetAgent = resolvedAgent && (!onlineOnly || getAgentAvailability(resolvedAgent, "offline") === "online")
     ? resolvedAgent
     : null;
