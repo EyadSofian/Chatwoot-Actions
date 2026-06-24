@@ -555,7 +555,9 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
       "botpress_cloud_handoff",
       {
         allowReassignment: true,
-        agentMode: "online",
+        // Sales routes to a Resale agent whether online or offline (per spec);
+        // operations follows agent online status. Mirrors handleDepartmentSelection.
+        agentMode: department === "sales" && config.salesAssignmentMode !== "online" ? "any_status" : "online",
         sendConfirmation: false
       }
     );
