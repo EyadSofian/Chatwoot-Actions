@@ -5,6 +5,7 @@ import {
   buildPhoneAssignPreview,
   extractPhoneNumbers,
   filterDepartmentAgents,
+  getBotpressDepartment,
   getOpenConversationReport,
   handleBotpressCloudHandoff,
   handleDepartmentRouterWebhook,
@@ -45,6 +46,35 @@ test("parseDepartmentSelection understands numeric, Arabic, and English replies"
   assert.equal(parseDepartmentSelection("دعم المتدربين"), "operations");
   assert.equal(parseDepartmentSelection("شكاوي"), "complaints");
   assert.equal(parseDepartmentSelection("محتاج مساعدة"), null);
+});
+
+test("getBotpressDepartment prefers an explicit department field", () => {
+  assert.equal(getBotpressDepartment({ department: "sales" }), "sales");
+  assert.equal(getBotpressDepartment({ workflow: { department: "complaints" } }), "complaints");
+  assert.equal(getBotpressDepartment({ department: "دعم المتدربين" }), "operations");
+  assert.equal(getBotpressDepartment({ intent: "sales" }), "sales");
+});
+
+test("getBotpressDepartment infers from the summary intent line when no field is sent", () => {
+  const salesSummary = "النية: sales\nالاسم: Eyad\nالدورة: CFM\nالطلب/المشكلة: يرغب العميل في شراء كورس CFM.";
+  assert.equal(getBotpressDepartment({ summary: salesSummary }), "sales");
+
+  const complaintSummary = "النية: complaints\nالطلب/المشكلة: شكوى من الخدمة";
+  assert.equal(getBotpressDepartment({ summary: complaintSummary }), "complaints");
+
+  const arabicIntent = "النية: مبيعات\nالاسم: Eyad";
+  assert.equal(getBotpressDepartment({ workflow: { chatSummary: arabicIntent } }), "sales");
+});
+
+test("getBotpressDepartment does not misread a request/problem label as operations", () => {
+  // The summary uses "الطلب/المشكلة:" as a label; that must not match operations.
+  const salesSummary = "النية: sales\nالطلب/المشكلة: عايز اشتري كورس";
+  assert.equal(getBotpressDepartment({ summary: salesSummary }), "sales");
+});
+
+test("getBotpressDepartment defaults to operations only as a last resort", () => {
+  assert.equal(getBotpressDepartment({ summary: "العميل طلب التحدث لموظف." }), "operations");
+  assert.equal(getBotpressDepartment({}), "operations");
 });
 
 test("filterDepartmentAgents enforces team, inbox, and configured agent ids", () => {

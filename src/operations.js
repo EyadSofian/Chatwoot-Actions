@@ -1972,7 +1972,36 @@ function getBotpressSummary(body) {
   ).trim();
 }
 
-function getBotpressDepartment(body) {
+// Keyword sets shared by the explicit-field match and the summary inference.
+// Multi-word entries are matched as substrings; single words match whole tokens
+// so a summary line like "الطلب/المشكلة: ..." never trips the operations match.
+const DEPARTMENT_KEYWORDS = {
+  sales: ["resale", "re sale", "sales", "sale", "مبيعات", "المبيعات", "سيلز", "ريسيل"],
+  operations: ["operation", "operations", "ops", "support", "trainee support", "دعم المتدربين", "دعم", "عمليات", "العمليات", "متدربين", "تشغيل"],
+  complaints: ["complaint", "complaints", "شكوى", "شكاوي", "الشكاوي", "الشكاوى", "اعتراض", "تصعيد"]
+};
+
+// Matches a free-form value (a field value or a summary line) to a department.
+// Single-word keywords must appear as a standalone token; phrases match anywhere.
+function matchDepartmentInText(value) {
+  const normalized = normalizeDepartmentText(value);
+  if (!normalized) return null;
+  const tokens = new Set(normalized.split(" "));
+  for (const [department, words] of Object.entries(DEPARTMENT_KEYWORDS)) {
+    for (const word of words) {
+      const normalizedWord = normalizeDepartmentText(word);
+      if (!normalizedWord) continue;
+      if (normalizedWord.includes(" ")) {
+        if (normalized.includes(normalizedWord)) return department;
+      } else if (tokens.has(normalizedWord)) {
+        return department;
+      }
+    }
+  }
+  return null;
+}
+
+function getExplicitBotpressDepartment(body) {
   const values = [
     body.department,
     body.route,
@@ -1980,23 +2009,49 @@ function getBotpressDepartment(body) {
     body.handoffDepartment,
     body.selection,
     body.choice,
+    body.intent,
     body.workflow?.department,
     body.workflow?.route,
     body.workflow?.targetDepartment,
     body.workflow?.handoffDepartment,
     body.workflow?.selection,
-    body.workflow?.choice
+    body.workflow?.choice,
+    body.workflow?.intent
   ];
 
   for (const value of values) {
-    const direct = normalizeDepartmentText(value);
-    if (!direct) continue;
-    if (["resale", "re-sale", "sales", "sale", "مبيعات", "المبيعات", "ريسيل"].includes(direct)) return "sales";
-    if (["operation", "operations", "ops", "support", "trainee support", "دعم", "دعم المتدربين", "عمليات", "العمليات"].includes(direct)) return "operations";
-    if (["complaint", "complaints", "شكوى", "شكاوي", "الشكاوي", "الشكاوى"].includes(direct)) return "complaints";
+    if (value == null || String(value).trim() === "") continue;
+    const matched = matchDepartmentInText(value);
+    if (matched) return matched;
     const parsed = parseDepartmentSelection(value);
     if (parsed) return parsed;
   }
+
+  return null;
+}
+
+// Pulls the department out of the structured summary ("النية: sales") that Fahd
+// writes. Tries the labelled intent line first, then scans the whole summary so
+// a clear complaint/sales/ops signal is still caught when the label is missing.
+const INTENT_LABEL_RE = /(?:الني[ةه]|intent|القسم|department)\s*[:：]\s*([^\n\r]+)/i;
+
+function inferDepartmentFromSummary(text) {
+  const raw = String(text || "");
+  if (!raw.trim()) return null;
+  const labelMatch = raw.match(INTENT_LABEL_RE);
+  if (labelMatch) {
+    const labelled = matchDepartmentInText(labelMatch[1]);
+    if (labelled) return labelled;
+  }
+  return matchDepartmentInText(raw);
+}
+
+export function getBotpressDepartment(body) {
+  const explicit = getExplicitBotpressDepartment(body);
+  if (explicit) return explicit;
+
+  const inferred = inferDepartmentFromSummary(getBotpressSummary(body));
+  if (inferred) return inferred;
 
   return "operations";
 }
