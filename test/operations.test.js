@@ -329,6 +329,38 @@ test("handleBotpressCloudHandoff queues resolved reentry during hours when no op
   }
 });
 
+test("handleBotpressCloudHandoff stays silent after hours when outsideHoursMode is return_only", async () => {
+  const mock = createBotpressHandoffMock({
+    teamAgents: [{ id: 21, name: "Abdelrahman Adel", availability_status: "offline" }],
+    inboxAgents: [{ id: 21, name: "Abdelrahman Adel", availability_status: "offline" }]
+  });
+
+  await new Promise(resolve => mock.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = mock.server.address();
+    const result = await handleBotpressCloudHandoff({
+      conversationId: 33,
+      summary: "customer asked after hours",
+      department: "operations"
+    }, botpressHandoffOptions(port, {
+      inHoursQueueMessage: "please wait",
+      outsideHoursMessage: "outside hours",
+      outsideHoursMode: "return_only",
+      now: () => new Date("2026-06-14T19:30:00Z")
+    }));
+
+    assert.equal(result.routing.action, "department_team_unassigned");
+    assert.equal(result.queueMessageId, null);
+    // Only the internal private note is posted; no customer-facing message.
+    assert.deepEqual(mock.messages.map(item => item.content), [
+      "\u{1F4DD} **ملخص فهد:**\ncustomer asked after hours"
+    ]);
+    assert.equal(mock.statusCalled, true);
+  } finally {
+    await new Promise(resolve => mock.server.close(resolve));
+  }
+});
+
 test("handleBotpressCloudHandoff assigns complaints to the configured owner even when offline", async () => {
   const mock = createBotpressHandoffMock({
     agents: [{ id: 19, name: "Abdelrahman Tarek", availability_status: "offline" }]

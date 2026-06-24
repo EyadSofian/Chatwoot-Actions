@@ -2104,9 +2104,12 @@ function shouldSendBotpressQueueMessage(routing) {
 function getBotpressQueueMessage(botpressConfig) {
   const outsideWorkingHours = botpressConfig.workingHours?.enabled &&
     !isWithinBusinessHours(botpressConfig.workingHours);
-  return outsideWorkingHours
-    ? botpressConfig.outsideHoursMessage
-    : botpressConfig.inHoursQueueMessage;
+  if (outsideWorkingHours) {
+    // "return_only": route the conversation but stay silent outside hours.
+    if (botpressConfig.outsideHoursMode === "return_only") return "";
+    return botpressConfig.outsideHoursMessage;
+  }
+  return botpressConfig.inHoursQueueMessage;
 }
 
 async function removeBotHandoffLabel(client, conversation, botpressConfig) {
