@@ -1234,6 +1234,14 @@ function hasExternalCampaignMetadata(conversation) {
   );
 }
 
+// True when a conversation came from (or was touched by) a broadcast/campaign,
+// using the same native + external marker detection as the department router.
+// The Botpress bridge uses this to avoid letting Fahd answer broadcast replies.
+export function isBroadcastConversation(conversation, ttlSeconds) {
+  if (!conversation) return false;
+  return Boolean(getConversationCampaignMarker(conversation, ttlSeconds));
+}
+
 function getLocalCampaignMarker(localRoute) {
   if (String(localRoute?.state || "").toLowerCase() !== "broadcast") return null;
   const expiresAt = parseDateValue(localRoute?.campaignExpiresAt);

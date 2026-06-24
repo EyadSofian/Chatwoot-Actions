@@ -1,9 +1,11 @@
-import { makeClient } from "./operations.js";
+import { isBroadcastConversation, makeClient } from "./operations.js";
 
 const BOTPRESS_WEBHOOK_URL = process.env.BOTPRESS_WEBHOOK_URL || "";
 const BOTPRESS_PAT = process.env.BOTPRESS_PAT || "";
 const REQUIRE_LABEL = String(process.env.BRIDGE_REQUIRE_LABEL ?? "needs-bot").trim();
 const BOT_INBOX_IDS = String(process.env.BOT_INBOX_IDS || "").split(",").map(s => s.trim()).filter(Boolean);
+const SKIP_BROADCASTS = String(process.env.BRIDGE_SKIP_BROADCASTS ?? "true").toLowerCase() !== "false";
+const CAMPAIGN_MARKER_TTL_SECONDS = Number(process.env.CAMPAIGN_MARKER_TTL_SECONDS) || undefined;
 
 const seen = new Map();
 const botpressConversationMap = new Map();
@@ -74,6 +76,7 @@ async function fillFromApi(convId, g) {
       assigneeId: c.meta?.assignee?.id || c.assignee?.id || g.assigneeId,
       status: String(c.status || g.status || "").toLowerCase(),
       inboxId: String(c.inbox_id || c.inbox?.id || c.meta?.inbox?.id || g.inboxId || ""),
+      raw: c,
     };
   } catch {
     return g;
@@ -97,6 +100,15 @@ export async function forwardIncomingToBotpress(body = {}) {
   }
 
   g = await fillFromApi(convId, g);
+
+  // Broadcast/campaign conversations are handled by the team, not Fahd. Skip
+  // them even when an automation stamped needs-bot on every new conversation.
+  if (SKIP_BROADCASTS &&
+    (isBroadcastConversation(body.conversation, CAMPAIGN_MARKER_TTL_SECONDS) ||
+      isBroadcastConversation(g.raw, CAMPAIGN_MARKER_TTL_SECONDS))) {
+    return { ok: true, skipped: true, reason: "broadcast", conversationId: convId };
+  }
+
   const hasLabel = !REQUIRE_LABEL || g.labels.includes(REQUIRE_LABEL);
   if (!hasLabel || g.assigneeId) {
     return { ok: true, skipped: true, reason: "gate_blocked", hasLabel, assigneeId: g.assigneeId };
