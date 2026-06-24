@@ -114,7 +114,13 @@ export async function forwardIncomingToBotpress(body = {}) {
   }
 
   const hasLabel = !REQUIRE_LABEL || g.labels.includes(REQUIRE_LABEL);
-  if (!hasLabel || g.assigneeId) {
+  // An assignee normally blocks Fahd (a human is actively handling the chat). But a
+  // needs-bot conversation that shows a prior resolve is a fresh re-entry: the old
+  // assignee is stale, so hand it back to the bot even if a missed/late resolve
+  // webhook left the assignee attached. needs-bot is cleared once Fahd hands off,
+  // so an actively-handled conversation never reaches this branch.
+  const blockedByAssignee = Boolean(g.assigneeId) && !releasedAfterResolve;
+  if (!hasLabel || blockedByAssignee) {
     return { ok: true, skipped: true, reason: "gate_blocked", hasLabel, assigneeId: g.assigneeId };
   }
 

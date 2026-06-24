@@ -23,8 +23,7 @@ import {
   executePhoneAssign,
   getOpenConversationReport,
   getReportsSummary,
-  handleDepartmentRouterWebhook,
-  handleReopenRouterWebhook,
+  handleResolvedReentryReset,
   makeClient,
   parsePhoneAssignInput,
   probeChatwoot
@@ -255,10 +254,11 @@ async function route(req, res) {
       router = { ok: true, reason: "forwarded_to_botpress", skippedRouters: true };
     } else {
       try {
-        const departmentRouter = await handleDepartmentRouterWebhook(body);
-        router = departmentRouter.handled
-          ? departmentRouter
-          : await handleReopenRouterWebhook(body);
+        // Legacy department/reopen routers are retired. Fahd (Botpress) owns all
+        // routing now; the only remaining server-side step is clearing the
+        // assignee/team when a bot-managed conversation is resolved so the next
+        // customer message flows back to the bot instead of a stale department.
+        router = await handleResolvedReentryReset(body);
       } catch (error) {
         router = {
           ok: false,

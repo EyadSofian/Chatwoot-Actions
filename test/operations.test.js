@@ -10,6 +10,7 @@ import {
   handleBotpressCloudHandoff,
   handleDepartmentRouterWebhook,
   handleReopenRouterWebhook,
+  handleResolvedReentryReset,
   isWithinBusinessHours,
   normalizePhone,
   parseDepartmentSelection,
@@ -3346,3 +3347,107 @@ function botpressHandoffOptions(port, botpressOverrides = {}) {
     audit: false
   };
 }
+
+test("handleResolvedReentryReset clears assignee and team when a bot conversation is resolved", async () => {
+  const assignments = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "resolved",
+        inbox_id: 2,
+        team_id: 4,
+        meta: { assignee: { id: 9, name: "Old Agent" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignments.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleResolvedReentryReset({
+      event: "conversation_status_changed",
+      id: 33,
+      status: "resolved",
+      inbox_id: 2
+    }, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      botEnabled: true,
+      botInboxIds: ["2"],
+      audit: false
+    });
+
+    assert.equal(result.handled, true);
+    assert.equal(result.action, "resolved_reentry_reset");
+    assert.equal(result.unassignedOnResolve, true);
+    assert.equal(result.teamClearedOnResolve, true);
+    assert.deepEqual(assignments, [{ assignee_id: null }, { team_id: null }]);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleResolvedReentryReset ignores non-resolve events and a disabled bot", async () => {
+  const ignored = await handleResolvedReentryReset({
+    event: "message_created",
+    id: 33,
+    inbox_id: 2
+  }, { botEnabled: true, botInboxIds: ["2"], audit: false });
+  assert.equal(ignored.handled, false);
+  assert.equal(ignored.reason, "not_status_change");
+
+  const disabled = await handleResolvedReentryReset({
+    event: "conversation_status_changed",
+    id: 33,
+    status: "resolved",
+    inbox_id: 2
+  }, { botEnabled: false, botInboxIds: ["2"], audit: false });
+  assert.equal(disabled.handled, false);
+  assert.equal(disabled.reason, "bot_disabled");
+});
+
+test("handleResolvedReentryReset skips conversations outside the bot inboxes", async () => {
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    if (url.pathname === "/api/v1/accounts/1/conversations/55" && req.method === "GET") {
+      res.end(JSON.stringify({ id: 55, status: "resolved", inbox_id: 9, meta: { assignee: { id: 9 } } }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleResolvedReentryReset({
+      event: "conversation_status_changed",
+      id: 55,
+      status: "resolved",
+      inbox_id: 9
+    }, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      botEnabled: true,
+      botInboxIds: ["2"],
+      audit: false
+    });
+    assert.equal(result.handled, false);
+    assert.equal(result.reason, "inbox_not_bot_managed");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});

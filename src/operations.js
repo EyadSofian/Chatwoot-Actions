@@ -493,13 +493,13 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
     };
   }
 
+  // The bot reuses the department routing config (teams, agents, business hours,
+  // confirmation texts) but is gated by BOTPRESS_CLOUD_ENABLED only — it no longer
+  // depends on the legacy DEPARTMENT_ROUTER_ENABLED switch, which is retired.
   const config = buildDepartmentRouterConfig({
     ...await loadSavedRouterOptions("department", options),
     ...options
   });
-  if (!config.enabled) {
-    return { ok: true, skipped: true, reason: "department_router_disabled", conversationId };
-  }
 
   const client = makeClient(options.connection || {});
   const response = await client.conversationDetails(conversationId);
@@ -874,6 +874,79 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
       inboxId
     };
   });
+}
+
+// Fahd (Botpress) is the only router now. The legacy department/reopen routers
+// are no longer wired into the webhook flow. The one piece still needed from the
+// old resolve handling is clearing the assignee/team when a bot-managed
+// conversation is resolved, so the customer's next message arrives with no
+// assignee and the bridge can hand it back to the bot for a fresh routing.
+export async function handleResolvedReentryReset(payload = {}, options = {}) {
+  const eventName = String(payload.event || payload.name || "").toLowerCase();
+  if (!eventName.includes("conversation_status_changed")) {
+    return { ok: true, handled: false, skipped: true, reason: "not_status_change" };
+  }
+
+  const botEnabled = parseBooleanOption(options.botEnabled, process.env.BOTPRESS_CLOUD_ENABLED, false);
+  if (!botEnabled) {
+    return { ok: true, handled: false, skipped: true, reason: "bot_disabled" };
+  }
+
+  const message = getWebhookMessage(payload);
+  const conversationId = getWebhookConversationId(payload, message) ||
+    (eventName.startsWith("conversation_") ? payload?.id : null);
+  if (!conversationId) {
+    return { ok: true, handled: false, skipped: true, reason: "missing_conversation_id" };
+  }
+
+  const botInboxIds = parseListOption(options.botInboxIds, process.env.BOT_INBOX_IDS, []).map(String);
+  const client = makeClient(options.connection || {});
+
+  let conversation;
+  try {
+    const response = await client.conversationDetails(conversationId);
+    conversation = unwrapConversationResponse(response) || getWebhookConversation(payload, message) || { id: conversationId };
+  } catch {
+    conversation = getWebhookConversation(payload, message) || { id: conversationId };
+  }
+  conversation.id = conversation.id || conversationId;
+
+  const inboxId = getConversationInboxId(conversation);
+  if (botInboxIds.length && !botInboxIds.includes(String(inboxId))) {
+    return { ok: true, handled: false, skipped: true, reason: "inbox_not_bot_managed", conversationId, inboxId };
+  }
+
+  const status = getWebhookConversationStatus(payload, conversation);
+  if (status !== "resolved") {
+    return { ok: true, handled: false, skipped: true, reason: "status_not_resolved", conversationId, inboxId, status };
+  }
+
+  const resolvedAssigneeId = getConversationAssigneeId(conversation);
+  const resolvedTeamId = getConversationTeamId(conversation);
+  const clearAssignment = await clearResolvedConversationAssignment(client, conversationId, conversation);
+
+  await auditDepartmentRouter("bot_resolved_reentry_reset", {
+    conversationId,
+    inboxId,
+    status,
+    resolvedAssigneeId: resolvedAssigneeId || null,
+    resolvedTeamId: resolvedTeamId || null,
+    unassignedOnResolve: clearAssignment.assigneeCleared,
+    teamClearedOnResolve: clearAssignment.teamCleared,
+    teamClearError: clearAssignment.teamError || null
+  }, options.audit !== false);
+
+  return {
+    ok: true,
+    handled: true,
+    action: "resolved_reentry_reset",
+    conversationId,
+    inboxId,
+    status,
+    unassignedOnResolve: clearAssignment.assigneeCleared,
+    teamClearedOnResolve: clearAssignment.teamCleared,
+    teamClearError: clearAssignment.teamError || null
+  };
 }
 
 function buildDepartmentRouterConfig(options = {}) {
