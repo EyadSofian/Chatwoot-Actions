@@ -297,6 +297,38 @@ test("handleBotpressCloudHandoff queues resolved reentry during hours when no op
   }
 });
 
+test("handleBotpressCloudHandoff assigns complaints to the configured owner even when offline", async () => {
+  const mock = createBotpressHandoffMock({
+    agents: [{ id: 19, name: "Abdelrahman Tarek", availability_status: "offline" }]
+  });
+
+  await new Promise(resolve => mock.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = mock.server.address();
+    const result = await handleBotpressCloudHandoff({
+      conversationId: 33,
+      summary: "customer submitted a formal complaint",
+      department: "complaints"
+    }, {
+      ...botpressHandoffOptions(port, {
+        now: () => new Date("2026-06-14T12:00:00Z")
+      }),
+      complaintAgentName: "Abdelrahman Tarek"
+    });
+
+    assert.equal(result.action, "botpress_cloud_handoff");
+    assert.equal(result.routing.action, "complaint_assigned");
+    assert.equal(result.routing.toAgentId, 19);
+    assert.equal(result.queueMessageId, null);
+    assert.equal(result.removedBotLabel, true);
+    assert.deepEqual(mock.assignments, [{ team_id: 3 }, { assignee_id: 19 }]);
+    assert.deepEqual(mock.labelsBody, { labels: ["vip"] });
+    assert.equal(mock.statusCalled, true);
+  } finally {
+    await new Promise(resolve => mock.server.close(resolve));
+  }
+});
+
 test("handleBotpressCloudHandoff skips broadcast handoffs before touching Chatwoot", async () => {
   const result = await handleBotpressCloudHandoff({
     conversationId: 33,
@@ -888,7 +920,7 @@ test("handleDepartmentRouterWebhook routes to the team unassigned outside busine
 
     assert.equal(result.action, "department_team_unassigned");
     assert.equal(result.department, "operations");
-    assert.deepEqual(assignmentBodies, [{ team_id: 3 }]);
+    assert.deepEqual(assignmentBodies, [{ team_id: 3 }, { assignee_id: null }]);
     assert.equal(teamAgentsCalled, false);
   } finally {
     await new Promise(resolve => server.close(resolve));
@@ -963,7 +995,7 @@ test("handleDepartmentRouterWebhook can route a choice to the team and leave it 
     assert.equal(result.action, "department_team_unassigned");
     assert.equal(result.department, "operations");
     assert.equal(result.toAgentId, null);
-    assert.deepEqual(assignmentBodies, [{ team_id: 3 }]);
+    assert.deepEqual(assignmentBodies, [{ team_id: 3 }, { assignee_id: null }]);
     assert.equal(teamAgentsCalled, false);
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "routed");
     assert.match(outgoingMessages[0].content, /الاسم الثلاثي/);
@@ -1135,7 +1167,7 @@ test("handleDepartmentRouterWebhook queues trainee support when no online operat
     assert.equal(result.action, "department_team_queue");
     assert.equal(result.department, "operations");
     assert.equal(result.toAgentId, null);
-    assert.deepEqual(assignmentBodies, [{ team_id: 3 }]);
+    assert.deepEqual(assignmentBodies, [{ team_id: 3 }, { assignee_id: null }]);
     assert.equal(outgoingMessages.length, 1);
     assert.match(outgoingMessages[0].content, /الاسم الثلاثي/);
   } finally {
@@ -1906,6 +1938,7 @@ test("handleDepartmentRouterWebhook treats resolved-only contact history as a fr
 
 test("handleDepartmentRouterWebhook marks resolved conversations to prompt on the next reply", async () => {
   let customAttributesBody = null;
+  const assignments = [];
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
     res.setHeader("content-type", "application/json; charset=utf-8");
@@ -1918,7 +1951,8 @@ test("handleDepartmentRouterWebhook marks resolved conversations to prompt on th
         custom_attributes: {
           engosoft_department: "sales",
           engosoft_department_team_id: 4
-        }
+        },
+        meta: { assignee: { id: 9, name: "Old Sales Agent" } }
       }));
       return;
     }
@@ -1926,6 +1960,12 @@ test("handleDepartmentRouterWebhook marks resolved conversations to prompt on th
     if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
       customAttributesBody = await readRequestJson(req);
       res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
+      assignments.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 
@@ -1961,6 +2001,8 @@ test("handleDepartmentRouterWebhook marks resolved conversations to prompt on th
 
     assert.equal(result.handled, true);
     assert.equal(result.action, "marked_for_reentry");
+    assert.equal(result.unassignedOnResolve, true);
+    assert.deepEqual(assignments, [{ assignee_id: null }]);
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_prompt_next, true);
     assert.equal(customAttributesBody.custom_attributes.engosoft_department_route_state, "resolved");
     // Resolving releases the manual-assignment lock so the reopen reroutes.
@@ -1981,6 +2023,7 @@ test("handleDepartmentRouterWebhook prompts a resolved conversation again on the
     engosoft_department_auto_assigned_agent_id: "9",
     engosoft_department_manual_assignment: false
   };
+  let assignee = { id: 9, name: "Old Sales Agent", availability_status: "offline" };
   const assignments = [];
   const outgoingMessages = [];
   const server = createServer(async (req, res) => {
@@ -1996,7 +2039,7 @@ test("handleDepartmentRouterWebhook prompts a resolved conversation again on the
         custom_attributes: customAttributes,
         meta: {
           sender: { id: 10, name: "Ahmed" },
-          assignee: { id: 9, name: "Old Sales Agent", availability_status: "offline" },
+          assignee,
           inbox: { id: 2, name: "WhatsApp" }
         }
       }));
@@ -2011,7 +2054,9 @@ test("handleDepartmentRouterWebhook prompts a resolved conversation again on the
     }
 
     if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments" && req.method === "POST") {
-      assignments.push(await readRequestJson(req));
+      const body = await readRequestJson(req);
+      assignments.push(body);
+      if (body.assignee_id === null) assignee = null;
       res.end(JSON.stringify({ ok: true }));
       return;
     }
@@ -2973,6 +3018,7 @@ function createMemoryDepartmentStateStore(initial = {}) {
 }
 
 function createBotpressHandoffMock({
+  agents = [],
   teamAgents = [],
   inboxAgents = [],
   labels = ["needs-bot", "vip"]
@@ -3038,6 +3084,11 @@ function createBotpressHandoffMock({
 
     if (url.pathname === "/api/v1/accounts/1/inbox_members/2" && req.method === "GET") {
       res.end(JSON.stringify(inboxAgents));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/agents" && req.method === "GET") {
+      res.end(JSON.stringify(agents));
       return;
     }
 

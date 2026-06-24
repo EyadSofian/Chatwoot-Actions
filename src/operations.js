@@ -545,7 +545,7 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
     if (sendCustomerMessage && config.complaintReceivedText) {
       await sendDepartmentMessage(client, conversationId, config.complaintReceivedText);
     }
-    routing = await routeComplaintToAgent(client, conversation, config, "botpress_cloud_handoff", { onlineOnly: true });
+    routing = await routeComplaintToAgent(client, conversation, config, "botpress_cloud_handoff", { onlineOnly: false });
   } else {
     routing = await routeConversationToDepartment(
       client,
@@ -675,10 +675,17 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
         [DEPARTMENT_ATTRIBUTES.autoAssignedAgentId]: null,
         [DEPARTMENT_ATTRIBUTES.manualAssignment]: false
       });
+      const resolvedAssigneeId = getConversationAssigneeId(conversation);
+      let unassignResult = null;
+      if (resolvedAssigneeId) {
+        unassignResult = await client.assignConversation(conversationId, { assignee_id: null });
+      }
       await auditDepartmentRouter("department_router_marked_for_reentry", {
         conversationId,
         inboxId,
         status,
+        resolvedAssigneeId: resolvedAssigneeId || null,
+        unassignedOnResolve: Boolean(unassignResult),
         customAttributes
       }, config.audit);
       return {
@@ -687,7 +694,8 @@ export async function handleDepartmentRouterWebhook(payload = {}, options = {}) 
         action: "marked_for_reentry",
         conversationId,
         inboxId,
-        status
+        status,
+        unassignedOnResolve: Boolean(unassignResult)
       };
     }
 
@@ -1445,9 +1453,7 @@ async function routeConversationToDepartment(
   // assignee_id is present, so the team and the unassign are two separate calls.
   if (!assignAgentNow) {
     const assignmentResult = await client.assignConversation(conversationId, { team_id: Number(teamId) });
-    if (currentAssigneeId) {
-      await client.assignConversation(conversationId, { assignee_id: null });
-    }
+    await client.assignConversation(conversationId, { assignee_id: null });
     const updatedAttributes = await persistDepartmentState(client, conversation, config, {
       [DEPARTMENT_ATTRIBUTES.department]: department,
       [DEPARTMENT_ATTRIBUTES.state]: "routed",
@@ -1510,7 +1516,7 @@ async function routeConversationToDepartment(
       action = agentMode === "any_status" ? "department_assigned_any_status" : "department_assigned";
     } else {
       assignmentResult = await client.assignConversation(conversationId, { team_id: Number(teamId) });
-      if (currentAssigneeId) await client.assignConversation(conversationId, { assignee_id: null });
+      await client.assignConversation(conversationId, { assignee_id: null });
       action = "department_team_queue";
     }
   }
@@ -1585,7 +1591,7 @@ async function routeComplaintToAgent(client, conversation, config, reason, { onl
     action = "complaint_assigned";
   } else {
     assignmentResult = await client.assignConversation(conversationId, { team_id: Number(teamId) });
-    if (currentAssigneeId) await client.assignConversation(conversationId, { assignee_id: null });
+    await client.assignConversation(conversationId, { assignee_id: null });
   }
 
   const updatedAttributes = await persistDepartmentState(client, conversation, config, {

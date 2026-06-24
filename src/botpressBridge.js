@@ -65,7 +65,6 @@ function getSenderPhone(body = {}) {
 }
 
 async function fillFromApi(convId, g) {
-  if (g.labels.length || g.assigneeId) return g;
   try {
     const r = await makeClient({}).conversationDetails(convId);
     const c = r?.payload || r || {};
@@ -73,6 +72,8 @@ async function fillFromApi(convId, g) {
       ...g,
       labels: Array.isArray(c.labels) ? c.labels : g.labels,
       assigneeId: c.meta?.assignee?.id || c.assignee?.id || g.assigneeId,
+      status: String(c.status || g.status || "").toLowerCase(),
+      inboxId: String(c.inbox_id || c.inbox?.id || c.meta?.inbox?.id || g.inboxId || ""),
     };
   } catch {
     return g;
