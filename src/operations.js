@@ -20,6 +20,15 @@ const DEPARTMENT_ATTRIBUTES = {
 const DEFAULT_CAMPAIGN_MARKER_TTL_SECONDS = 30 * 24 * 60 * 60;
 const COMPLAINT_ROUTE_STATE = "complaint_pending";
 const DEFAULT_COMPLAINT_AGENT_NAME = "Abdelrahman Tarek";
+// Durable "this conversation was resolved at least once" marker, written as a
+// Chatwoot custom attribute the moment we handle the resolve. Scanning the
+// embedded messages array for the "marked resolved" activity is unreliable —
+// Chatwoot does not consistently include that activity in webhook /
+// conversationDetails payloads — so a resolved broadcast conversation would be
+// re-skipped as a broadcast on re-entry and never reach the bot. A custom
+// attribute is always returned by the API and survives redeploys, so the bridge
+// can reliably release such a conversation back to the bot on the next message.
+const BOT_RELEASE_ATTRIBUTE = "engosoft_bot_release";
 
 export function makeClient(connection) {
   return new ChatwootClient(connection || {});
@@ -924,6 +933,10 @@ export async function handleResolvedReentryReset(payload = {}, options = {}) {
   const resolvedAssigneeId = getConversationAssigneeId(conversation);
   const resolvedTeamId = getConversationTeamId(conversation);
   const clearAssignment = await clearResolvedConversationAssignment(client, conversationId, conversation);
+  // Stamp the durable resolve marker so the next customer message is released to
+  // the bot even on a broadcast conversation, without depending on the embedded
+  // messages array carrying the "marked resolved" activity.
+  const releaseMarked = await stampBotReleaseMarker(client, conversation);
 
   await auditDepartmentRouter("bot_resolved_reentry_reset", {
     conversationId,
@@ -933,7 +946,8 @@ export async function handleResolvedReentryReset(payload = {}, options = {}) {
     resolvedTeamId: resolvedTeamId || null,
     unassignedOnResolve: clearAssignment.assigneeCleared,
     teamClearedOnResolve: clearAssignment.teamCleared,
-    teamClearError: clearAssignment.teamError || null
+    teamClearError: clearAssignment.teamError || null,
+    releaseMarked
   }, options.audit !== false);
 
   return {
@@ -945,7 +959,8 @@ export async function handleResolvedReentryReset(payload = {}, options = {}) {
     status,
     unassignedOnResolve: clearAssignment.assigneeCleared,
     teamClearedOnResolve: clearAssignment.teamCleared,
-    teamClearError: clearAssignment.teamError || null
+    teamClearError: clearAssignment.teamError || null,
+    releaseMarked
   };
 }
 
@@ -1746,6 +1761,27 @@ async function clearResolvedConversationAssignment(client, conversationId, conve
   return result;
 }
 
+export function conversationHasBotReleaseMarker(conversation) {
+  return Boolean(getConversationCustomAttributes(conversation)[BOT_RELEASE_ATTRIBUTE]);
+}
+
+// Stamp the durable resolve marker, merging with existing custom attributes so we
+// never clobber other keys. Best-effort: a failure here must not break the
+// resolve handling, so callers treat the boolean result as advisory.
+async function stampBotReleaseMarker(client, conversation) {
+  try {
+    const merged = {
+      ...getConversationCustomAttributes(conversation),
+      [BOT_RELEASE_ATTRIBUTE]: new Date().toISOString()
+    };
+    const response = await client.updateConversationCustomAttributes(conversation.id, merged);
+    conversation.custom_attributes = response?.custom_attributes || merged;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function routeConversationToDepartment(
   client,
   conversation,
@@ -2440,6 +2476,10 @@ function isBotpressResolvedReentry(body, conversation, localRoute) {
     body.workflow?.shouldResetContext
   ];
   if (explicitFlags.some(value => parseBooleanOption(value, undefined, false))) return true;
+
+  // The durable resolve marker is the most reliable signal: if we stamped it on a
+  // prior resolve, this is a genuine re-entry regardless of what flags Fahd echoes.
+  if (conversationHasBotReleaseMarker(conversation)) return true;
 
   const customAttributes = getConversationCustomAttributes(conversation);
   const states = [

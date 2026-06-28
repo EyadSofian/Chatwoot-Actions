@@ -1,4 +1,4 @@
-import { conversationHasResolveActivity, isBroadcastConversation, makeClient } from "./operations.js";
+import { conversationHasBotReleaseMarker, conversationHasResolveActivity, isBroadcastConversation, makeClient } from "./operations.js";
 
 const BOTPRESS_WEBHOOK_URL = process.env.BOTPRESS_WEBHOOK_URL || "";
 const BOTPRESS_PAT = process.env.BOTPRESS_PAT || "";
@@ -104,8 +104,12 @@ export async function forwardIncomingToBotpress(body = {}) {
   // Broadcast/campaign conversations are handled by the team, not Fahd. Skip
   // them even when an automation stamped needs-bot on every new conversation.
   // Once an agent has resolved the conversation, the campaign episode is over:
-  // release it so the customer's next message flows to Fahd normally.
-  const releasedAfterResolve = conversationHasResolveActivity(g.raw) ||
+  // release it so the customer's next message flows to Fahd normally. The durable
+  // resolve marker (stamped on resolve) is the reliable signal; the message-scan
+  // is kept as a fallback for conversations resolved before the marker existed.
+  const releasedAfterResolve = conversationHasBotReleaseMarker(g.raw) ||
+    conversationHasBotReleaseMarker(body.conversation) ||
+    conversationHasResolveActivity(g.raw) ||
     conversationHasResolveActivity(body.conversation);
   if (SKIP_BROADCASTS && !releasedAfterResolve &&
     (isBroadcastConversation(body.conversation, CAMPAIGN_MARKER_TTL_SECONDS) ||

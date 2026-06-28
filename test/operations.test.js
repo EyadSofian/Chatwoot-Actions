@@ -3759,3 +3759,59 @@ test("runCustomerTimeoutSweep assigns to an ONLINE eligible agent and never an o
     await new Promise(resolve => mock.server.close(resolve));
   }
 });
+
+test("handleResolvedReentryReset stamps the durable resolve marker, preserving existing attributes", async () => {
+  let customAttributesBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/40" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 40,
+        status: "resolved",
+        inbox_id: 2,
+        custom_attributes: { existing_key: "keep" },
+        meta: { assignee: { id: 9 } }
+      }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/40/assignments" && req.method === "POST") {
+      await readRequestJson(req);
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/40/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleResolvedReentryReset({
+      event: "conversation_status_changed",
+      id: 40,
+      status: "resolved",
+      inbox_id: 2
+    }, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      botEnabled: true,
+      botInboxIds: ["2"],
+      audit: false
+    });
+
+    assert.equal(result.handled, true);
+    assert.equal(result.releaseMarked, true);
+    assert.ok(customAttributesBody, "custom attributes should be written");
+    assert.equal(customAttributesBody.custom_attributes.existing_key, "keep");
+    assert.ok(customAttributesBody.custom_attributes.engosoft_bot_release, "marker timestamp set");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
