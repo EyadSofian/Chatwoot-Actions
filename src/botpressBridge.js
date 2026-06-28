@@ -1,4 +1,4 @@
-import { conversationHasResolveActivity, isBroadcastConversation, makeClient } from "./operations.js";
+import { conversationHasResolveActivity, isBroadcastConversation, makeClient, wasResolvedReopenedWithoutAgentReply } from "./operations.js";
 
 const BOTPRESS_WEBHOOK_URL = process.env.BOTPRESS_WEBHOOK_URL || "";
 const BOTPRESS_PAT = process.env.BOTPRESS_PAT || "";
@@ -114,14 +114,17 @@ export async function forwardIncomingToBotpress(body = {}) {
   }
 
   const hasLabel = !REQUIRE_LABEL || g.labels.includes(REQUIRE_LABEL);
-  // An assignee normally blocks Fahd (a human is actively handling the chat). But a
-  // needs-bot conversation that shows a prior resolve is a fresh re-entry: the old
-  // assignee is stale, so hand it back to the bot even if a missed/late resolve
-  // webhook left the assignee attached. needs-bot is cleared once Fahd hands off,
-  // so an actively-handled conversation never reaches this branch.
-  const blockedByAssignee = Boolean(g.assigneeId) && !releasedAfterResolve;
-  if (!hasLabel || blockedByAssignee) {
-    return { ok: true, skipped: true, reason: "gate_blocked", hasLabel, assigneeId: g.assigneeId };
+  // A *fresh* resolved re-entry (an agent closed the chat and the customer came
+  // back, with no agent/bot reply since) belongs to Fahd regardless of the fragile
+  // needs-bot label or a stale assignee left by a missed/late resolve webhook.
+  // This is deliberately stricter than "any prior resolve": once the bot hands off
+  // and the agent (or bot) replies, it is false again, so Fahd never interrupts a
+  // conversation a human is actively handling.
+  const freshResolvedReentry = wasResolvedReopenedWithoutAgentReply(g.raw, body) ||
+    wasResolvedReopenedWithoutAgentReply(body.conversation, body);
+  const shouldForward = freshResolvedReentry || (hasLabel && !g.assigneeId);
+  if (!shouldForward) {
+    return { ok: true, skipped: true, reason: "gate_blocked", hasLabel, assigneeId: g.assigneeId, freshResolvedReentry };
   }
 
   const botpressUserId = `chatwoot-user-${userId}`;
