@@ -3701,6 +3701,65 @@ function createCustomerTimeoutMock({
   return state;
 }
 
+test("runCustomerTimeoutSweep assigns to an ONLINE eligible agent and never an offline one", async () => {
+  const nowDate = () => new Date("2026-06-15T12:00:00Z"); // Monday, inside 10:00-21:00 Cairo
+  const sec = Math.floor(Date.parse("2026-06-15T12:00:00Z") / 1000);
+  const mock = createCustomerTimeoutMock({
+    conversationId: 34,
+    inboxId: 2,
+    labels: ["needs-bot", "vip"],
+    // Agent 21 is OFFLINE, agent 28 is ONLINE; both are in the team, the inbox,
+    // and the allowed operations pool. Only the online one (28) may be picked.
+    teamAgents: [
+      { id: 21, name: "Offline Agent", availability_status: "offline" },
+      { id: 28, name: "Online Agent", availability_status: "online" }
+    ],
+    inboxAgents: [
+      { id: 21, name: "Offline Agent" },
+      { id: 28, name: "Online Agent" }
+    ],
+    messages: [
+      { id: 1, message_type: 0, content: "محتاج مساعدة", created_at: sec - 1800, sender_type: "contact" },
+      { id: 2, message_type: 1, content: "هل ترغب في تسجيل شكوى؟", created_at: sec - 900 }
+    ]
+  });
+
+  await new Promise(resolve => mock.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = mock.server.address();
+    const result = await runCustomerTimeoutSweep({
+      enabled: true,
+      inboxIds: ["2"],
+      minutes: 10,
+      label: "needs-bot",
+      cooldownSeconds: 0,
+      now: nowDate,
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      operationsTeamId: "3",
+      operationsAgentIds: ["21", "28"],
+      workingHours: {
+        enabled: true,
+        timezone: "Africa/Cairo",
+        startMinutes: 10 * 60,
+        endMinutes: 21 * 60,
+        days: new Set([0, 1, 2, 3, 4, 6]),
+        now: nowDate
+      },
+      audit: false
+    });
+
+    assert.equal(result.escalated.length, 1);
+    assert.equal(result.escalated[0].routingAction, "department_assigned");
+    // Assigned to the ONLINE agent (28), never the offline one (21).
+    assert.deepEqual(mock.assignments, [{ team_id: 3 }, { assignee_id: 28 }]);
+    const assignedIds = mock.assignments.map(item => item.assignee_id).filter(value => value != null);
+    assert.equal(assignedIds.includes(21), false);
+    assert.deepEqual(mock.labelsBody, { labels: ["vip"] });
+  } finally {
+    await new Promise(resolve => mock.server.close(resolve));
+  }
+});
+
 test("handleResolvedReentryReset stamps the durable resolve marker, preserving existing attributes", async () => {
   let customAttributesBody = null;
   const server = createServer(async (req, res) => {
