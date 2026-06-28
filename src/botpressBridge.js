@@ -1,4 +1,4 @@
-import { conversationHasBotReleaseMarker, conversationHasResolveActivity, isBroadcastConversation, makeClient } from "./operations.js";
+import { conversationHasBotReleaseMarker, conversationHasResolveActivity, isBroadcastConversation, makeClient, wasResolvedReopenedWithoutAgentReply } from "./operations.js";
 
 const BOTPRESS_WEBHOOK_URL = process.env.BOTPRESS_WEBHOOK_URL || "";
 const BOTPRESS_PAT = process.env.BOTPRESS_PAT || "";
@@ -124,8 +124,15 @@ export async function forwardIncomingToBotpress(body = {}) {
   // webhook left the assignee attached. needs-bot is cleared once Fahd hands off,
   // so an actively-handled conversation never reaches this branch.
   const blockedByAssignee = Boolean(g.assigneeId) && !releasedAfterResolve;
-  if (!hasLabel || blockedByAssignee) {
-    return { ok: true, skipped: true, reason: "gate_blocked", hasLabel, assigneeId: g.assigneeId };
+  // A *fresh* resolved re-entry (the agent closed the chat and the customer came
+  // back, with no agent/bot reply since) belongs to Fahd even if a Chatwoot rule
+  // stripped needs-bot or a missed resolve webhook left a stale assignee. This is
+  // stricter than "any prior resolve": once Fahd hands off and a public reply lands
+  // after the resolve, it is false again, so an active chat is never interrupted.
+  const freshResolvedReentry = wasResolvedReopenedWithoutAgentReply(g.raw, body) ||
+    wasResolvedReopenedWithoutAgentReply(body.conversation, body);
+  if (!freshResolvedReentry && (!hasLabel || blockedByAssignee)) {
+    return { ok: true, skipped: true, reason: "gate_blocked", hasLabel, assigneeId: g.assigneeId, freshResolvedReentry };
   }
 
   const botpressUserId = `chatwoot-user-${userId}`;
