@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import {
   buildPhoneAssignPreview,
+  evaluateCustomerTimeout,
   extractPhoneNumbers,
   filterDepartmentAgents,
   getBotpressDepartment,
@@ -14,7 +15,8 @@ import {
   isWithinBusinessHours,
   normalizePhone,
   parseDepartmentSelection,
-  parsePhoneAssignInput
+  parsePhoneAssignInput,
+  runCustomerTimeoutSweep
 } from "../src/operations.js";
 
 test("normalizePhone removes formatting and international prefix", () => {
@@ -3451,3 +3453,250 @@ test("handleResolvedReentryReset skips conversations outside the bot inboxes", a
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+// --- Customer-silence timeout escalation -------------------------------------
+
+test("evaluateCustomerTimeout flags an unanswered bot message older than the timeout", () => {
+  const now = Date.parse("2026-06-15T12:00:00Z");
+  const sec = Math.floor(now / 1000);
+  const messages = [
+    { id: 1, message_type: 0, content: "السلام عليكم", created_at: sec - 1800, sender_type: "contact" },
+    { id: 2, message_type: 1, content: "ما اسم الدورة؟", created_at: sec - 900 }
+  ];
+  const result = evaluateCustomerTimeout(messages, { timeoutMs: 10 * 60 * 1000, now });
+  assert.equal(result.eligible, true);
+  assert.equal(result.reason, "customer_silent");
+  assert.equal(result.lastDirection, "outgoing");
+});
+
+test("evaluateCustomerTimeout ignores a chat where the customer is awaiting the bot", () => {
+  const now = Date.parse("2026-06-15T12:00:00Z");
+  const sec = Math.floor(now / 1000);
+  const messages = [
+    { id: 1, message_type: 1, content: "اهلا", created_at: sec - 1800 },
+    { id: 2, message_type: 0, content: "محتاج مساعدة", created_at: sec - 900, sender_type: "contact" }
+  ];
+  const result = evaluateCustomerTimeout(messages, { timeoutMs: 10 * 60 * 1000, now });
+  assert.equal(result.eligible, false);
+  assert.equal(result.reason, "awaiting_bot_reply");
+});
+
+test("evaluateCustomerTimeout keeps a recent bot message inside the window", () => {
+  const now = Date.parse("2026-06-15T12:00:00Z");
+  const sec = Math.floor(now / 1000);
+  const messages = [
+    { id: 1, message_type: 0, content: "اهلا", created_at: sec - 300, sender_type: "contact" },
+    { id: 2, message_type: 1, content: "اهلا بيك", created_at: sec - 120 }
+  ];
+  const result = evaluateCustomerTimeout(messages, { timeoutMs: 10 * 60 * 1000, now });
+  assert.equal(result.eligible, false);
+  assert.equal(result.reason, "within_timeout");
+});
+
+test("evaluateCustomerTimeout skips activity and private messages when picking the last public one", () => {
+  const now = Date.parse("2026-06-15T12:00:00Z");
+  const sec = Math.floor(now / 1000);
+  const messages = [
+    { id: 1, message_type: 0, content: "سؤال", created_at: sec - 1800, sender_type: "contact" },
+    { id: 2, message_type: 1, content: "رد البوت", created_at: sec - 1500 },
+    { id: 3, message_type: 2, content: "Conversation was marked resolved", created_at: sec - 60, content_type: "activity" },
+    { id: 4, message_type: 1, content: "ملخص فهد", private: true, created_at: sec - 30 }
+  ];
+  const result = evaluateCustomerTimeout(messages, { timeoutMs: 10 * 60 * 1000, now });
+  assert.equal(result.eligible, true);
+  assert.equal(result.lastDirection, "outgoing");
+});
+
+test("runCustomerTimeoutSweep is inert until enabled", async () => {
+  const result = await runCustomerTimeoutSweep({
+    enabled: false,
+    inboxIds: ["2"],
+    connection: { baseUrl: "http://127.0.0.1:1", accountId: "1", apiToken: "t" }
+  });
+  assert.equal(result.skipped, true);
+  assert.equal(result.reason, "customer_timeout_disabled");
+});
+
+test("runCustomerTimeoutSweep escalates an abandoned bot chat to the team Unassigned", async () => {
+  const nowDate = () => new Date("2026-06-15T12:00:00Z");
+  const sec = Math.floor(Date.parse("2026-06-15T12:00:00Z") / 1000);
+  const mock = createCustomerTimeoutMock({
+    conversationId: 34,
+    inboxId: 2,
+    labels: ["needs-bot", "vip"],
+    teamAgents: [{ id: 21, name: "Abdelrahman Adel", availability_status: "offline" }],
+    inboxAgents: [{ id: 21, name: "Abdelrahman Adel", availability_status: "offline" }],
+    messages: [
+      { id: 1, message_type: 0, content: "محتاج مساعدة", created_at: sec - 1800, sender_type: "contact" },
+      { id: 2, message_type: 1, content: "هل ترغب في تسجيل شكوى؟", created_at: sec - 900 }
+    ]
+  });
+
+  await new Promise(resolve => mock.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = mock.server.address();
+    const result = await runCustomerTimeoutSweep({
+      enabled: true,
+      inboxIds: ["2"],
+      minutes: 10,
+      label: "needs-bot",
+      cooldownSeconds: 0,
+      now: nowDate,
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      operationsTeamId: "3",
+      operationsAgentIds: ["21"],
+      workingHours: {
+        enabled: true,
+        timezone: "Africa/Cairo",
+        startMinutes: 10 * 60,
+        endMinutes: 21 * 60,
+        days: new Set([0, 1, 2, 3, 4, 6]),
+        now: nowDate
+      },
+      audit: false
+    });
+
+    assert.equal(result.escalated.length, 1);
+    assert.equal(result.escalated[0].conversationId, 34);
+    assert.equal(result.escalated[0].routingAction, "department_team_queue");
+    assert.deepEqual(mock.assignments, [{ team_id: 3 }, { assignee_id: null }]);
+    assert.deepEqual(mock.labelsBody, { labels: ["vip"] });
+    const publicMessages = mock.messages.filter(item => item.private !== true);
+    assert.equal(publicMessages.length, 1);
+  } finally {
+    await new Promise(resolve => mock.server.close(resolve));
+  }
+});
+
+test("runCustomerTimeoutSweep leaves a chat where the customer is awaiting the bot", async () => {
+  const nowDate = () => new Date("2026-06-15T12:00:00Z");
+  const sec = Math.floor(Date.parse("2026-06-15T12:00:00Z") / 1000);
+  const mock = createCustomerTimeoutMock({
+    conversationId: 34,
+    inboxId: 2,
+    labels: ["needs-bot"],
+    messages: [
+      { id: 1, message_type: 1, content: "اهلا", created_at: sec - 1800 },
+      { id: 2, message_type: 0, content: "عندي مشكلة", created_at: sec - 900, sender_type: "contact" }
+    ]
+  });
+
+  await new Promise(resolve => mock.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = mock.server.address();
+    const result = await runCustomerTimeoutSweep({
+      enabled: true,
+      inboxIds: ["2"],
+      minutes: 10,
+      label: "needs-bot",
+      cooldownSeconds: 0,
+      now: nowDate,
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      operationsTeamId: "3",
+      audit: false
+    });
+
+    assert.equal(result.escalated.length, 0);
+    assert.equal(mock.assignments.length, 0);
+    assert.equal(result.skipped.some(item => item.reason === "awaiting_bot_reply"), true);
+  } finally {
+    await new Promise(resolve => mock.server.close(resolve));
+  }
+});
+
+function createCustomerTimeoutMock({
+  conversationId = 34,
+  inboxId = 2,
+  labels = ["needs-bot"],
+  messages = [],
+  teamAgents = [],
+  inboxAgents = [],
+  agents = []
+} = {}) {
+  const state = {
+    messages: [],
+    assignments: [],
+    labelsBody: null,
+    statusCalled: false,
+    currentLabels: [...labels],
+    server: null
+  };
+  const base = "/api/v1/accounts/1";
+
+  state.server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    const p = url.pathname;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (p === `${base}/conversations` && req.method === "GET") {
+      const page = Number(url.searchParams.get("page") || "1");
+      const payload = page === 1
+        ? [{ id: conversationId, status: "open", inbox_id: inboxId, labels: state.currentLabels }]
+        : [];
+      res.end(JSON.stringify({ payload }));
+      return;
+    }
+    if (p === `${base}/conversations/${conversationId}` && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: conversationId,
+        status: "open",
+        inbox_id: inboxId,
+        labels: state.currentLabels,
+        custom_attributes: {},
+        meta: { assignee: null, inbox: { id: inboxId, name: "WhatsApp" } }
+      }));
+      return;
+    }
+    if (p === `${base}/conversations/${conversationId}/messages` && req.method === "GET") {
+      res.end(JSON.stringify({ payload: messages }));
+      return;
+    }
+    if (p === `${base}/conversations/${conversationId}/messages` && req.method === "POST") {
+      state.messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 800 + state.messages.length }));
+      return;
+    }
+    if (p === `${base}/conversations/${conversationId}/labels` && req.method === "GET") {
+      res.end(JSON.stringify({ payload: state.currentLabels }));
+      return;
+    }
+    if (p === `${base}/conversations/${conversationId}/labels` && req.method === "POST") {
+      state.labelsBody = await readRequestJson(req);
+      state.currentLabels = state.labelsBody.labels;
+      res.end(JSON.stringify({ payload: state.currentLabels }));
+      return;
+    }
+    if (p === `${base}/conversations/${conversationId}/toggle_status` && req.method === "POST") {
+      state.statusCalled = true;
+      res.end(JSON.stringify({ status: "open" }));
+      return;
+    }
+    if (p === `${base}/conversations/${conversationId}/custom_attributes` && req.method === "POST") {
+      await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: {} }));
+      return;
+    }
+    if (p === `${base}/conversations/${conversationId}/assignments` && req.method === "POST") {
+      state.assignments.push(await readRequestJson(req));
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (p === `${base}/teams/3/team_members` && req.method === "GET") {
+      res.end(JSON.stringify(teamAgents));
+      return;
+    }
+    if (p === `${base}/inbox_members/${inboxId}` && req.method === "GET") {
+      res.end(JSON.stringify(inboxAgents));
+      return;
+    }
+    if (p === `${base}/agents` && req.method === "GET") {
+      res.end(JSON.stringify(agents));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found", path: p, method: req.method }));
+  });
+
+  return state;
+}

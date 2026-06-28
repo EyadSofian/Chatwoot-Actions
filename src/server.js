@@ -26,7 +26,8 @@ import {
   handleResolvedReentryReset,
   makeClient,
   parsePhoneAssignInput,
-  probeChatwoot
+  probeChatwoot,
+  runCustomerTimeoutSweep
 } from "./operations.js";
 import { forwardIncomingToBotpress, handleBotpressResponse } from "./botpressBridge.js";
 
@@ -67,6 +68,46 @@ const server = createServer(async (req, res) => {
 server.listen(port, host, () => {
   console.log(`Chatwoot Ops Console running at http://${host}:${port}`);
 });
+
+startCustomerTimeoutSweep();
+
+// Background sweep: hand off conversations the customer abandoned mid-chat with
+// Fahd. Opt-in via CUSTOMER_TIMEOUT_ENABLED so it is inert unless configured.
+function startCustomerTimeoutSweep() {
+  if (!parseBooleanEnv(process.env.CUSTOMER_TIMEOUT_ENABLED)) return;
+
+  const seconds = Number(process.env.CUSTOMER_TIMEOUT_SWEEP_SECONDS);
+  const intervalMs = Math.max(15, Number.isFinite(seconds) && seconds > 0 ? seconds : 60) * 1000;
+  const minutes = Number(process.env.CUSTOMER_TIMEOUT_MINUTES) || 10;
+  let running = false;
+
+  const tick = async () => {
+    if (running) return; // never let two sweeps overlap
+    running = true;
+    try {
+      const result = await runCustomerTimeoutSweep();
+      if (result?.escalated?.length) {
+        console.log("customer-timeout sweep:", JSON.stringify({
+          scanned: result.scanned,
+          escalated: result.escalated.length,
+          conversationIds: result.escalated.map(item => item.conversationId)
+        }));
+      }
+    } catch (error) {
+      console.log("customer-timeout sweep error:", error.message);
+    } finally {
+      running = false;
+    }
+  };
+
+  const timer = setInterval(tick, intervalMs);
+  if (typeof timer.unref === "function") timer.unref();
+  console.log(`Customer-timeout sweep enabled (every ${intervalMs / 1000}s, ${minutes}m threshold)`);
+}
+
+function parseBooleanEnv(value) {
+  return ["1", "true", "yes", "on", "enabled"].includes(String(value ?? "").trim().toLowerCase());
+}
 
 function isAuthorized(req) {
   if (isSharedSecretAuthorized(req)) return true;
