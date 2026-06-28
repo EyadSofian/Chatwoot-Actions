@@ -2258,7 +2258,7 @@ function getKnownConversationDepartment(conversation, config, localRoute = null)
   return null;
 }
 
-function wasResolvedReopenedWithoutAgentReply(conversation, incomingMessage) {
+export function wasResolvedReopenedWithoutAgentReply(conversation, incomingMessage) {
   const messages = normalizeRows(conversation?.messages);
   if (messages.length === 0) return false;
 
