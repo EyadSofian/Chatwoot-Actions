@@ -949,6 +949,273 @@ export async function handleResolvedReentryReset(payload = {}, options = {}) {
   };
 }
 
+// --- Customer-silence timeout escalation -------------------------------------
+// When Fahd (the bot) sends a message and the customer goes silent, nobody is
+// watching the clock: the conversation just sits in the bot inbox with needs-bot
+// and no assignee until an agent happens to notice it. This sweep closes that
+// gap. It periodically scans the bot inbox for conversations whose last public
+// message is an unanswered outgoing (bot) message older than the timeout, then
+// routes them to a human through the existing Botpress-cloud handoff (an online
+// agent inside working hours, otherwise the team Unassigned) and clears
+// needs-bot. Everything is inferred from Chatwoot, so it survives redeploys.
+const customerTimeoutCooldowns = new Map();
+
+export function evaluateCustomerTimeout(messages, { timeoutMs, now = Date.now() } = {}) {
+  const rows = normalizeRows(messages)
+    .map((message, index) => ({ message, index, timeMs: getMessageTimeMs(message) }))
+    .filter(entry => isPublicMessage(entry.message))
+    .sort((left, right) => {
+      const leftValue = left.timeMs ?? left.index;
+      const rightValue = right.timeMs ?? right.index;
+      return leftValue - rightValue || left.index - right.index;
+    });
+
+  if (rows.length === 0) return { eligible: false, reason: "no_public_messages" };
+
+  const last = rows[rows.length - 1];
+  // Only a hanging outgoing message means the customer is the one who went
+  // silent. If the last public message is incoming, the customer is waiting on
+  // the bot instead — a different failure that this sweep deliberately ignores.
+  if (!isOutgoingPublicMessage(last.message)) {
+    return { eligible: false, reason: "awaiting_bot_reply", lastDirection: "incoming" };
+  }
+  // Require at least one customer message so a bot/agent-initiated outbound
+  // thread with no customer engagement is never escalated.
+  if (!rows.some(entry => isCustomerMessage(entry.message))) {
+    return { eligible: false, reason: "no_customer_message", lastDirection: "outgoing" };
+  }
+  if (last.timeMs == null) {
+    return { eligible: false, reason: "missing_timestamp", lastDirection: "outgoing" };
+  }
+
+  const ageMs = now - last.timeMs;
+  if (ageMs < timeoutMs) {
+    return { eligible: false, reason: "within_timeout", lastDirection: "outgoing", ageMs };
+  }
+  return {
+    eligible: true,
+    reason: "customer_silent",
+    lastDirection: "outgoing",
+    ageMs,
+    lastMessageAt: new Date(last.timeMs).toISOString()
+  };
+}
+
+export async function runCustomerTimeoutSweep(options = {}) {
+  const config = buildCustomerTimeoutConfig(options);
+  if (!config.enabled) return { ok: true, skipped: true, reason: "customer_timeout_disabled" };
+  if (!config.inboxIds.length) return { ok: true, skipped: true, reason: "no_inbox_ids" };
+
+  const client = options.client || makeClient(options.connection || {});
+  const now = typeof config.now === "function" ? config.now().getTime() : Date.now();
+  const timeoutMs = Math.max(1, config.minutes) * 60 * 1000;
+
+  const seen = new Set();
+  const candidates = [];
+  for (const inboxId of config.inboxIds) {
+    let rows = [];
+    try {
+      rows = await listConversationsByListEndpoint(client, {
+        status: "open",
+        inboxId,
+        assigneeType: "unassigned",
+        labels: config.label ? [config.label] : undefined
+      }, config.maxPages);
+    } catch (error) {
+      await auditDepartmentRouter("customer_timeout_list_error", { inboxId, error: error.message }, config.audit);
+      continue;
+    }
+    for (const conversation of rows) {
+      const id = conversation?.id;
+      if (id == null || seen.has(String(id))) continue;
+      seen.add(String(id));
+      candidates.push(conversation);
+    }
+  }
+
+  const escalated = [];
+  const skipped = [];
+  let scanned = 0;
+  for (const conversation of candidates) {
+    if (escalated.length >= config.maxConversations) break;
+    const conversationId = conversation.id;
+    if (isCustomerTimeoutCooling(conversationId, config.cooldownSeconds)) {
+      skipped.push({ conversationId, reason: "cooling" });
+      continue;
+    }
+    scanned += 1;
+    try {
+      const decision = await assessCustomerTimeoutConversation(client, conversation, config, { now, timeoutMs });
+      if (!decision.eligible) {
+        skipped.push({ conversationId, reason: decision.reason });
+        continue;
+      }
+      // Mark before the handoff so a slow call or a lagging label update can't
+      // trigger a duplicate escalation on the next tick.
+      markCustomerTimeoutCooldown(conversationId, config.cooldownSeconds);
+      const handoff = await handleBotpressCloudHandoff(
+        {
+          conversationId,
+          source: "customer-timeout",
+          department: decision.department,
+          sendCustomerMessage: true,
+          openConversation: false
+        },
+        buildCustomerTimeoutHandoffOptions(options, config)
+      );
+      const routingAction = handoff?.routing?.action || handoff?.reason || null;
+      escalated.push({ conversationId, ageMs: decision.ageMs, department: decision.department, routingAction });
+      await auditDepartmentRouter("customer_timeout_escalated", {
+        conversationId,
+        inboxId: getConversationInboxId(conversation),
+        ageMs: decision.ageMs,
+        department: decision.department,
+        routingAction
+      }, config.audit);
+    } catch (error) {
+      skipped.push({ conversationId, reason: "error", error: error.message });
+      await auditDepartmentRouter("customer_timeout_error", { conversationId, error: error.message }, config.audit);
+    }
+  }
+
+  return { ok: true, scanned, candidates: candidates.length, escalated, skipped };
+}
+
+async function assessCustomerTimeoutConversation(client, listConversation, config, { now, timeoutMs }) {
+  const conversationId = listConversation.id;
+
+  // Re-fetch authoritative state: the list snapshot can be stale by the time we
+  // act, and we must never escalate a chat a human already grabbed or answered.
+  let conversation = listConversation;
+  try {
+    const response = await client.conversationDetails(conversationId);
+    conversation = unwrapConversationResponse(response) || listConversation;
+  } catch {
+    conversation = listConversation;
+  }
+
+  if (String(conversation.status || "").toLowerCase() !== "open") {
+    return { eligible: false, reason: "not_open" };
+  }
+  if (getConversationAssigneeId(conversation)) {
+    return { eligible: false, reason: "already_assigned" };
+  }
+  if (config.label && !normalizeLabelNames(conversation.labels).includes(config.label)) {
+    return { eligible: false, reason: "label_missing" };
+  }
+  if (config.inboxIds.length) {
+    const inboxId = String(getConversationInboxId(conversation) || "");
+    if (inboxId && !config.inboxIds.includes(inboxId)) return { eligible: false, reason: "inbox_mismatch" };
+  }
+
+  const messages = normalizeRows(await client.conversationMessages(conversationId));
+  const evaluation = evaluateCustomerTimeout(messages, { timeoutMs, now });
+  if (!evaluation.eligible) return evaluation;
+
+  return { ...evaluation, department: getKnownTimeoutDepartment(conversation, config) };
+}
+
+function getKnownTimeoutDepartment(conversation, config) {
+  const attributes = getConversationCustomAttributes(conversation);
+  const saved = normalizeDepartmentText(attributes[DEPARTMENT_ATTRIBUTES.department] || "");
+  if (saved === "sales" || saved === "operations" || saved === "complaints") return saved;
+  return config.department;
+}
+
+function buildCustomerTimeoutConfig(options = {}) {
+  return {
+    enabled: parseBooleanOption(options.enabled, process.env.CUSTOMER_TIMEOUT_ENABLED, false),
+    minutes: numberOption(options.minutes, process.env.CUSTOMER_TIMEOUT_MINUTES, 10),
+    inboxIds: parseListOption(
+      options.inboxIds,
+      process.env.CUSTOMER_TIMEOUT_INBOX_IDS || process.env.BOT_INBOX_IDS,
+      []
+    ).map(String),
+    label: options.label !== undefined
+      ? String(options.label || "").trim()
+      : String(process.env.CUSTOMER_TIMEOUT_LABEL ?? process.env.BRIDGE_REQUIRE_LABEL ?? "needs-bot").trim(),
+    department: String(options.department ?? process.env.CUSTOMER_TIMEOUT_DEPARTMENT ?? "operations").toLowerCase(),
+    maxPages: numberOption(options.maxPages, process.env.CUSTOMER_TIMEOUT_MAX_PAGES, 3),
+    maxConversations: numberOption(options.maxConversations, process.env.CUSTOMER_TIMEOUT_MAX_CONVERSATIONS, 50),
+    cooldownSeconds: numberOption(options.cooldownSeconds, process.env.CUSTOMER_TIMEOUT_COOLDOWN_SECONDS, 600),
+    workingHours: buildCustomerTimeoutWorkingHours(options),
+    now: options.now,
+    audit: options.audit !== false
+  };
+}
+
+// The assign-vs-queue decision reuses Fahd's working hours by default so a
+// timeout escalation behaves like any other handoff: an online agent inside
+// hours, the team Unassigned on Friday / outside hours.
+function buildCustomerTimeoutWorkingHours(options = {}) {
+  if (options.businessHours) return options.businessHours;
+  if (options.workingHours) return options.workingHours;
+
+  const enabled = parseBooleanOption(
+    options.workingHoursEnabled,
+    process.env.CUSTOMER_TIMEOUT_WORKING_HOURS_ENABLED ?? process.env.BOTPRESS_CLOUD_WORKING_HOURS_ENABLED,
+    true
+  );
+  if (!enabled) return { enabled: false };
+
+  return {
+    enabled: true,
+    timezone: String(options.timezone ?? process.env.BOTPRESS_CLOUD_TIMEZONE ?? "Africa/Cairo"),
+    startMinutes: parseClockMinutes(options.start ?? process.env.BOTPRESS_CLOUD_START, 10 * 60),
+    endMinutes: parseClockMinutes(options.end ?? process.env.BOTPRESS_CLOUD_END, 21 * 60),
+    days: new Set(
+      parseListOption(options.days, process.env.BOTPRESS_CLOUD_DAYS, ["0", "1", "2", "3", "4", "6"])
+        .map(value => Number(value))
+        .filter(value => Number.isInteger(value) && value >= 0 && value <= 6)
+    ),
+    now: options.now
+  };
+}
+
+function buildCustomerTimeoutHandoffOptions(options, config) {
+  // Forward the caller's department-routing options (connection, team/agent ids,
+  // texts) to the handoff, but strip the keys we override below. In particular
+  // `enabled` must NOT leak through: a defined `enabled` makes the handoff skip
+  // loading the operator's saved department settings (see loadSavedRouterOptions).
+  const { enabled, now, businessHours, workingHours, botpress, audit, ...passthrough } = options;
+  return {
+    ...passthrough,
+    // The timeout is its own trigger (not a resolved re-entry), and it must work
+    // regardless of the live-bot switch, so force the handoff on and skip that gate.
+    botpress: { ...(botpress || {}), enabled: true, requireResolvedReentry: false },
+    // Honor working hours for the assign-vs-queue decision so Friday and off-hours
+    // route to the team Unassigned by rule, never pinned to a (possibly offline) agent.
+    businessHours: config.workingHours,
+    now: config.now,
+    audit: config.audit
+  };
+}
+
+function isCustomerTimeoutCooling(conversationId, cooldownSeconds) {
+  if (!cooldownSeconds) return false;
+  const until = customerTimeoutCooldowns.get(String(conversationId));
+  if (!until) return false;
+  if (Date.now() > until) {
+    customerTimeoutCooldowns.delete(String(conversationId));
+    return false;
+  }
+  return true;
+}
+
+function markCustomerTimeoutCooldown(conversationId, cooldownSeconds) {
+  if (!cooldownSeconds) return;
+  customerTimeoutCooldowns.set(String(conversationId), Date.now() + cooldownSeconds * 1000);
+}
+
+function numberOption(optionValue, envValue, fallback) {
+  for (const value of [optionValue, envValue]) {
+    if (value === undefined || value === null || value === "") continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
 function buildDepartmentRouterConfig(options = {}) {
   return {
     enabled: parseBooleanOption(options.enabled, process.env.DEPARTMENT_ROUTER_ENABLED, false),
