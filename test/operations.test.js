@@ -3760,6 +3760,58 @@ test("runCustomerTimeoutSweep assigns to an ONLINE eligible agent and never an o
   }
 });
 
+test("runCustomerTimeoutSweep infers the desk from the customer's words when unclassified", async () => {
+  const nowDate = () => new Date("2026-06-15T12:00:00Z"); // Monday, inside 10:00-21:00 Cairo
+  const sec = Math.floor(Date.parse("2026-06-15T12:00:00Z") / 1000);
+  // No saved department on the conversation (custom_attributes: {}). The customer
+  // stated a complaint, then went silent before Fahd could route — inference must
+  // pick complaints from the customer's words, exactly like the live handoff. The
+  // bot's outgoing line is ignored, so only the customer's intent counts.
+  const mock = createCustomerTimeoutMock({
+    conversationId: 34,
+    inboxId: 2,
+    labels: ["needs-bot"],
+    messages: [
+      { id: 1, message_type: 0, content: "عايز اقدم شكوى على الخدمة", created_at: sec - 1800, sender_type: "contact" },
+      { id: 2, message_type: 1, content: "ممكن توضح أكتر؟", created_at: sec - 900 }
+    ]
+  });
+
+  await new Promise(resolve => mock.server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = mock.server.address();
+    const result = await runCustomerTimeoutSweep({
+      enabled: true,
+      inboxIds: ["2"],
+      minutes: 10,
+      label: "needs-bot",
+      cooldownSeconds: 0,
+      now: nowDate,
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      operationsTeamId: "3",
+      complaintAgentId: "55",
+      complaintAgentName: "Abdelrahman Tarek",
+      workingHours: {
+        enabled: true,
+        timezone: "Africa/Cairo",
+        startMinutes: 10 * 60,
+        endMinutes: 21 * 60,
+        days: new Set([0, 1, 2, 3, 4, 6]),
+        now: nowDate
+      },
+      audit: false
+    });
+
+    assert.equal(result.escalated.length, 1);
+    assert.equal(result.escalated[0].department, "complaints");
+    assert.equal(result.escalated[0].routingAction, "complaint_assigned");
+    // Routed to the complaint owner (55) via the operations team, like the live handoff.
+    assert.deepEqual(mock.assignments, [{ team_id: 3 }, { assignee_id: 55 }]);
+  } finally {
+    await new Promise(resolve => mock.server.close(resolve));
+  }
+});
+
 test("handleResolvedReentryReset stamps the durable resolve marker, preserving existing attributes", async () => {
   let customAttributesBody = null;
   const server = createServer(async (req, res) => {

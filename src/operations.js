@@ -1127,14 +1127,32 @@ async function assessCustomerTimeoutConversation(client, listConversation, confi
   const evaluation = evaluateCustomerTimeout(messages, { timeoutMs, now });
   if (!evaluation.eligible) return evaluation;
 
-  return { ...evaluation, department: getKnownTimeoutDepartment(conversation, config) };
+  return { ...evaluation, department: getKnownTimeoutDepartment(conversation, config, messages) };
 }
 
-function getKnownTimeoutDepartment(conversation, config) {
+function getKnownTimeoutDepartment(conversation, config, messages = []) {
   const attributes = getConversationCustomAttributes(conversation);
   const saved = normalizeDepartmentText(attributes[DEPARTMENT_ATTRIBUTES.department] || "");
   if (saved === "sales" || saved === "operations" || saved === "complaints") return saved;
+  // Not yet classified — e.g. the customer went silent before Fahd could route, or
+  // a voice note that didn't transcribe. Mirror the live handoff and infer intent
+  // from the customer's own words so a timed-out sales/complaint thread still
+  // reaches the right desk; fall back to the configured default (operations).
+  const inferred = inferDepartmentFromCustomerMessages(messages);
+  if (inferred) return inferred;
   return config.department;
+}
+
+// Scan the customer's public messages newest-first for a department signal, using
+// the same keyword matcher as the live handoff so timeout routing and normal
+// routing agree. Returns null when nothing matches.
+function inferDepartmentFromCustomerMessages(messages) {
+  const rows = normalizeRows(messages).filter(isCustomerMessage);
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const matched = matchDepartmentInText(String(rows[i]?.content || ""));
+    if (matched) return matched;
+  }
+  return null;
 }
 
 function buildCustomerTimeoutConfig(options = {}) {
