@@ -1,4 +1,5 @@
 import { conversationHasBotReleaseMarker, conversationHasResolveActivity, isBroadcastConversation, makeClient, wasResolvedReopenedWithoutAgentReply } from "./operations.js";
+import { transcribeAudioUrl, firstAudioAttachmentUrl, voiceTranscriptionEnabled } from "./voiceTranscription.js";
 
 const BOTPRESS_WEBHOOK_URL = process.env.BOTPRESS_WEBHOOK_URL || "";
 const BOTPRESS_PAT = process.env.BOTPRESS_PAT || "";
@@ -6,6 +7,7 @@ const REQUIRE_LABEL = String(process.env.BRIDGE_REQUIRE_LABEL ?? "needs-bot").tr
 const BOT_INBOX_IDS = String(process.env.BOT_INBOX_IDS || "").split(",").map(s => s.trim()).filter(Boolean);
 const SKIP_BROADCASTS = String(process.env.BRIDGE_SKIP_BROADCASTS ?? "true").toLowerCase() !== "false";
 const CAMPAIGN_MARKER_TTL_SECONDS = Number(process.env.CAMPAIGN_MARKER_TTL_SECONDS) || undefined;
+const VOICE_PLACEHOLDER = String(process.env.VOICE_TRANSCRIBE_FALLBACK_TEXT ?? "[رسالة صوتية]");
 
 const seen = new Map();
 const botpressConversationMap = new Map();
@@ -87,7 +89,11 @@ export async function forwardIncomingToBotpress(body = {}) {
   if (!BOTPRESS_WEBHOOK_URL) return { ok: true, skipped: true, reason: "no_botpress_url" };
   if (body.message_type !== "incoming") return { ok: true, skipped: true, reason: "not_incoming" };
   if (body.private === true) return { ok: true, skipped: true, reason: "private_note" };
-  if (!body.content || !body.conversation?.id) return { ok: true, skipped: true, reason: "missing" };
+  const audioUrl = firstAudioAttachmentUrl(body);
+  // Only treat an audio-only message as forwardable when transcription is on;
+  // otherwise it stays a "missing" skip exactly like before (feature is inert).
+  const transcribeVoice = Boolean(audioUrl) && voiceTranscriptionEnabled();
+  if ((!body.content && !transcribeVoice) || !body.conversation?.id) return { ok: true, skipped: true, reason: "missing" };
 
   const convId = String(body.conversation.id);
   const userId = String(body.sender?.id || "unknown");
@@ -135,6 +141,19 @@ export async function forwardIncomingToBotpress(body = {}) {
     return { ok: true, skipped: true, reason: "gate_blocked", hasLabel, assigneeId: g.assigneeId, freshResolvedReentry };
   }
 
+  // Voice note → transcribe so Fahd understands it; fall back to a placeholder so
+  // the chat still reaches the bot instead of stalling. The conversation id is
+  // unchanged, so the transcript and Fahd's reply stay in the SAME Chatwoot
+  // conversation — whether it is a new chat or an existing/re-entered one.
+  let messageText = body.content;
+  let voiceTranscribed = false;
+  if (!messageText && transcribeVoice) {
+    const transcription = await transcribeAudioUrl(audioUrl);
+    messageText = transcription.transcript || VOICE_PLACEHOLDER;
+    voiceTranscribed = transcription.ok;
+  }
+  if (!messageText) messageText = VOICE_PLACEHOLDER;
+
   const botpressUserId = `chatwoot-user-${userId}`;
   const botpressConversationId = `chatwoot-conv-${convId}`;
   const chatwootContext = {
@@ -150,6 +169,8 @@ export async function forwardIncomingToBotpress(body = {}) {
     shouldResetContext: true,
     resolvedReentry: true,
     isResolvedReentry: true,
+    isVoiceNote: Boolean(audioUrl),
+    voiceTranscribed,
   };
   rememberBotpressConversation([botpressUserId, botpressConversationId], convId);
 
@@ -161,10 +182,10 @@ export async function forwardIncomingToBotpress(body = {}) {
       messageId: `msg-${msgId}`,
       conversationId: botpressConversationId,
       type: "text",
-      text: body.content,
+      text: messageText,
       payload: {
         type: "text",
-        text: body.content,
+        text: messageText,
         ...chatwootContext,
         metadata: chatwootContext,
       },
