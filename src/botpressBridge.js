@@ -117,7 +117,14 @@ export async function forwardIncomingToBotpress(body = {}) {
     conversationHasBotReleaseMarker(body.conversation) ||
     conversationHasResolveActivity(g.raw) ||
     conversationHasResolveActivity(body.conversation);
-  if (SKIP_BROADCASTS && !releasedAfterResolve &&
+  // A broadcast reaches Fahd only on a clean resolved re-entry: the conversation was
+  // resolved (which clears the assignee) and the customer came back on their own. If an
+  // agent has since re-taken it — a manual reopen + assign leaves an assignee attached —
+  // the team is actively handling that campaign reply, so Fahd stays out even though a
+  // resolve still sits in the history. (This guard is broadcast-only; an ordinary
+  // resolved re-entry with a stale assignee is still handled by the gate below.)
+  const broadcastReleasedToBot = releasedAfterResolve && !g.assigneeId;
+  if (SKIP_BROADCASTS && !broadcastReleasedToBot &&
     (isBroadcastConversation(body.conversation, CAMPAIGN_MARKER_TTL_SECONDS) ||
       isBroadcastConversation(g.raw, CAMPAIGN_MARKER_TTL_SECONDS))) {
     return { ok: true, skipped: true, reason: "broadcast", conversationId: convId };
