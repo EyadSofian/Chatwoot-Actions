@@ -43,6 +43,7 @@ test("transcribeAudioUrl returns the Deepgram transcript on success", async () =
   // First call downloads the audio, second hits Deepgram with the key + language.
   assert.equal(fetchImpl.calls[0].url, "https://chat.example.com/audio.oga");
   assert.match(fetchImpl.calls[1].url, /api\.deepgram\.test/);
+  assert.match(fetchImpl.calls[1].url, /model=nova-3/);
   assert.match(fetchImpl.calls[1].url, /language=ar/);
   assert.equal(fetchImpl.calls[1].opts.headers.Authorization, "Token dg-key");
 });
