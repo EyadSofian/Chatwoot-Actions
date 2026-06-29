@@ -239,6 +239,91 @@ test("forwardIncomingToBotpress releases a resolved broadcast conversation to Fa
   }
 });
 
+test("forwardIncomingToBotpress keeps Fahd OUT of a resolved broadcast once an agent re-took it", async () => {
+  // The production scenario: a campaign conversation was resolved (which clears the
+  // assignee), but an agent manually reopened it and assigned themselves. An assignee on
+  // a broadcast means the team is handling that campaign reply, so Fahd must stay out even
+  // though a resolve sits in the history — otherwise the bot answers a live broadcast.
+  let botpressCalled = false;
+  const previousEnv = {
+    CHATWOOT_BASE_URL: process.env.CHATWOOT_BASE_URL,
+    CHATWOOT_ACCOUNT_ID: process.env.CHATWOOT_ACCOUNT_ID,
+    CHATWOOT_API_TOKEN: process.env.CHATWOOT_API_TOKEN,
+    BOTPRESS_WEBHOOK_URL: process.env.BOTPRESS_WEBHOOK_URL,
+    BOTPRESS_PAT: process.env.BOTPRESS_PAT,
+    BRIDGE_REQUIRE_LABEL: process.env.BRIDGE_REQUIRE_LABEL,
+    BOT_INBOX_IDS: process.env.BOT_INBOX_IDS
+  };
+
+  const chatwootServer = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/39" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 39,
+        status: "open",
+        inbox_id: 27,
+        labels: ["needs-bot"],
+        campaign_id: 7,
+        meta: {
+          assignee: { id: 22, name: "Asmaa Fathy" },
+          inbox: { id: 27, name: "WhatsApp" }
+        },
+        messages: [
+          { id: 1, message_type: 2, content_type: "activity", content: "Conversation was marked resolved by Agent" },
+          { id: 2, message_type: 2, content_type: "activity", content: "Conversation was reopened by Agent" },
+          { id: 3, message_type: 0, content: "نعم" }
+        ]
+      }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  const botpressServer = createServer((req, res) => {
+    botpressCalled = true;
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ ok: true }));
+  });
+
+  await new Promise(resolve => chatwootServer.listen(0, "127.0.0.1", resolve));
+  await new Promise(resolve => botpressServer.listen(0, "127.0.0.1", resolve));
+
+  try {
+    process.env.CHATWOOT_BASE_URL = `http://127.0.0.1:${chatwootServer.address().port}`;
+    process.env.CHATWOOT_ACCOUNT_ID = "1";
+    process.env.CHATWOOT_API_TOKEN = "test-token";
+    process.env.BOTPRESS_WEBHOOK_URL = `http://127.0.0.1:${botpressServer.address().port}/hook`;
+    process.env.BOTPRESS_PAT = "";
+    process.env.BRIDGE_REQUIRE_LABEL = "needs-bot";
+    process.env.BOT_INBOX_IDS = "27";
+
+    const { forwardIncomingToBotpress } = await import(`../src/botpressBridge.js?broadcast-reassigned=${Date.now()}`);
+    const result = await forwardIncomingToBotpress({
+      id: "message-39",
+      message_type: "incoming",
+      private: false,
+      content: "نعم",
+      conversation: { id: 39, inbox_id: 27, labels: ["needs-bot"] },
+      sender: { id: 15, name: "Mohamed Salah" }
+    });
+
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "broadcast");
+    assert.equal(botpressCalled, false);
+  } finally {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await new Promise(resolve => chatwootServer.close(resolve));
+    await new Promise(resolve => botpressServer.close(resolve));
+  }
+});
+
 test("forwardIncomingToBotpress forwards a resolved re-entry even if a stale assignee remains", async () => {
   let botpressCalled = false;
   const previousEnv = {
