@@ -649,3 +649,37 @@ test("forwardIncomingToBotpress transcribes a voice note and forwards the text t
     await new Promise(resolve => botpressServer.close(resolve));
   }
 });
+
+test("forwardIncomingToBotpress leaves a voice note as a 'missing' skip when transcription is disabled", async () => {
+  const previousEnv = {
+    BOTPRESS_WEBHOOK_URL: process.env.BOTPRESS_WEBHOOK_URL,
+    BOT_INBOX_IDS: process.env.BOT_INBOX_IDS,
+    VOICE_TRANSCRIBE_ENABLED: process.env.VOICE_TRANSCRIBE_ENABLED,
+    DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY
+  };
+  try {
+    process.env.BOTPRESS_WEBHOOK_URL = "http://127.0.0.1:1/hook"; // must never be called
+    process.env.BOT_INBOX_IDS = "27";
+    delete process.env.VOICE_TRANSCRIBE_ENABLED;
+    delete process.env.DEEPGRAM_API_KEY;
+
+    const { forwardIncomingToBotpress } = await import(`../src/botpressBridge.js?voice-off=${Date.now()}`);
+    const result = await forwardIncomingToBotpress({
+      id: "message-voice-off",
+      message_type: "incoming",
+      private: false,
+      content: "",
+      attachments: [{ file_type: "audio", data_url: "http://127.0.0.1:1/audio.oga" }],
+      conversation: { id: 40, inbox_id: 27, labels: ["needs-bot"] },
+      sender: { id: 21, name: "Voice Off" }
+    });
+
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "missing");
+  } finally {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});

@@ -20,6 +20,14 @@ export function buildTranscriptionConfig(options = {}) {
   };
 }
 
+// True only when transcription is both switched on and has an API key. The
+// bridge uses this so a voice note is left to the existing "missing" skip while
+// the feature is off — keeping it fully inert by default.
+export function voiceTranscriptionEnabled(options = {}) {
+  const config = buildTranscriptionConfig(options);
+  return config.enabled && Boolean(config.apiKey);
+}
+
 // Returns { ok, transcript, reason }. Never throws: a transcription failure must
 // not break the webhook, the caller falls back to a placeholder.
 export async function transcribeAudioUrl(audioUrl, options = {}) {
