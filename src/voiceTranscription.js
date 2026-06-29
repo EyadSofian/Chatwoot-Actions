@@ -13,7 +13,7 @@ export function buildTranscriptionConfig(options = {}) {
   return {
     enabled: parseBool(options.enabled ?? process.env.VOICE_TRANSCRIBE_ENABLED, false),
     apiKey: String(options.apiKey ?? process.env.DEEPGRAM_API_KEY ?? "").trim(),
-    model: String(options.model ?? process.env.DEEPGRAM_MODEL ?? "nova-2"),
+    model: String(options.model ?? process.env.DEEPGRAM_MODEL ?? "nova-3"),
     language: String(options.language ?? process.env.DEEPGRAM_LANGUAGE ?? "ar"),
     baseUrl: String(options.baseUrl ?? process.env.DEEPGRAM_URL ?? DEFAULT_DEEPGRAM_URL),
     fetchImpl: options.fetchImpl || globalThis.fetch
