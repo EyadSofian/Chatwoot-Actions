@@ -1,5 +1,5 @@
 import { conversationHasBotReleaseMarker, conversationHasResolveActivity, isBroadcastConversation, makeClient, wasResolvedReopenedWithoutAgentReply } from "./operations.js";
-import { transcribeAudioUrl, firstAudioAttachmentUrl } from "./voiceTranscription.js";
+import { transcribeAudioUrl, firstAudioAttachmentUrl, voiceTranscriptionEnabled } from "./voiceTranscription.js";
 
 const BOTPRESS_WEBHOOK_URL = process.env.BOTPRESS_WEBHOOK_URL || "";
 const BOTPRESS_PAT = process.env.BOTPRESS_PAT || "";
@@ -90,7 +90,10 @@ export async function forwardIncomingToBotpress(body = {}) {
   if (body.message_type !== "incoming") return { ok: true, skipped: true, reason: "not_incoming" };
   if (body.private === true) return { ok: true, skipped: true, reason: "private_note" };
   const audioUrl = firstAudioAttachmentUrl(body);
-  if ((!body.content && !audioUrl) || !body.conversation?.id) return { ok: true, skipped: true, reason: "missing" };
+  // Only treat an audio-only message as forwardable when transcription is on;
+  // otherwise it stays a "missing" skip exactly like before (feature is inert).
+  const transcribeVoice = Boolean(audioUrl) && voiceTranscriptionEnabled();
+  if ((!body.content && !transcribeVoice) || !body.conversation?.id) return { ok: true, skipped: true, reason: "missing" };
 
   const convId = String(body.conversation.id);
   const userId = String(body.sender?.id || "unknown");
@@ -144,7 +147,7 @@ export async function forwardIncomingToBotpress(body = {}) {
   // conversation — whether it is a new chat or an existing/re-entered one.
   let messageText = body.content;
   let voiceTranscribed = false;
-  if (!messageText && audioUrl) {
+  if (!messageText && transcribeVoice) {
     const transcription = await transcribeAudioUrl(audioUrl);
     messageText = transcription.transcript || VOICE_PLACEHOLDER;
     voiceTranscribed = transcription.ok;
