@@ -151,6 +151,15 @@ export async function forwardIncomingToBotpress(body = {}) {
     const transcription = await transcribeAudioUrl(audioUrl);
     messageText = transcription.transcript || VOICE_PLACEHOLDER;
     voiceTranscribed = transcription.ok;
+    // Diagnostic: why a voice note did/didn't transcribe. Logs the outcome and a
+    // char count only (never the transcript text) so we can tell a Deepgram/model
+    // problem apart from an audio-download problem without leaking customer content.
+    console.log("voice:", JSON.stringify({
+      conversationId: convId,
+      ok: transcription.ok,
+      reason: transcription.reason,
+      chars: transcription.transcript.length
+    }));
   }
   if (!messageText) messageText = VOICE_PLACEHOLDER;
 
