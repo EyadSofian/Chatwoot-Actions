@@ -3525,6 +3525,50 @@ test("handleAgentAssignmentLabelDrop ignores non-update events and can be disabl
   assert.equal(disabled.reason, "disabled");
 });
 
+test("handleAgentAssignmentLabelDrop fetches details when the webhook omits the assignee, and still drops the label", async () => {
+  let labelsBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    if (url.pathname === "/api/v1/accounts/1/conversations/54" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 54, status: "open", inbox_id: 2, labels: ["needs-bot"],
+        meta: { assignee: { id: 30, name: "Agent" } }
+      }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/54/labels" && req.method === "GET") {
+      res.end(JSON.stringify({ payload: ["needs-bot"] }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/54/labels" && req.method === "POST") {
+      labelsBody = await readRequestJson(req);
+      res.end(JSON.stringify({ payload: labelsBody.labels }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    // Payload carries no assignee/meta shape — the handler must fetch to decide.
+    const result = await handleAgentAssignmentLabelDrop({
+      event: "conversation_updated",
+      conversation_id: 54
+    }, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      botInboxIds: ["2"],
+      audit: false
+    });
+    assert.equal(result.handled, true);
+    assert.deepEqual(labelsBody, { labels: [] });
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("handleResolvedReentryReset ignores non-resolve events and a disabled bot", async () => {
   const ignored = await handleResolvedReentryReset({
     event: "message_created",
