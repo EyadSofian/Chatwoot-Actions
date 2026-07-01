@@ -23,6 +23,7 @@ import {
   executePhoneAssign,
   getOpenConversationReport,
   getReportsSummary,
+  handleAgentAssignmentLabelDrop,
   handleResolvedReentryReset,
   makeClient,
   parsePhoneAssignInput,
@@ -296,10 +297,14 @@ async function route(req, res) {
     } else {
       try {
         // Legacy department/reopen routers are retired. Fahd (Botpress) owns all
-        // routing now; the only remaining server-side step is clearing the
-        // assignee/team when a bot-managed conversation is resolved so the next
-        // customer message flows back to the bot instead of a stale department.
+        // routing now; the remaining server-side steps are: clear the assignee/team
+        // when a bot-managed conversation is resolved (so the next customer message
+        // flows back to the bot), and drop the needs-bot label when a human agent takes
+        // the conversation (so Fahd stops). A given webhook is only ever one of these.
         router = await handleResolvedReentryReset(body);
+        if (router?.handled !== true) {
+          router = await handleAgentAssignmentLabelDrop(body);
+        }
       } catch (error) {
         router = {
           ok: false,
