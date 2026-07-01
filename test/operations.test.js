@@ -8,6 +8,7 @@ import {
   filterDepartmentAgents,
   getBotpressDepartment,
   getOpenConversationReport,
+  handleAgentAssignmentLabelDrop,
   handleBotpressCloudHandoff,
   handleDepartmentRouterWebhook,
   handleReopenRouterWebhook,
@@ -3400,6 +3401,128 @@ test("handleResolvedReentryReset clears assignee and team when a bot conversatio
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
+});
+
+test("handleAgentAssignmentLabelDrop removes needs-bot when a human agent takes the conversation", async () => {
+  let labelsBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/50" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 50,
+        status: "open",
+        inbox_id: 2,
+        labels: ["needs-bot", "vip"],
+        meta: { assignee: { id: 12, name: "Agent Mimi" } }
+      }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/50/labels" && req.method === "GET") {
+      res.end(JSON.stringify({ payload: ["needs-bot", "vip"] }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/50/labels" && req.method === "POST") {
+      labelsBody = await readRequestJson(req);
+      res.end(JSON.stringify({ payload: labelsBody.labels }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleAgentAssignmentLabelDrop({
+      event: "conversation_updated",
+      id: 50,
+      inbox_id: 2,
+      meta: { assignee: { id: 12, name: "Agent Mimi" } }
+    }, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      botInboxIds: ["2"],
+      audit: false
+    });
+
+    assert.equal(result.handled, true);
+    assert.equal(result.action, "needs_bot_label_dropped");
+    assert.equal(result.assigneeId, 12);
+    // needs-bot removed, the other label kept.
+    assert.deepEqual(labelsBody, { labels: ["vip"] });
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleAgentAssignmentLabelDrop leaves the label when no agent is assigned (fast path, no API call)", async () => {
+  const result = await handleAgentAssignmentLabelDrop({
+    event: "conversation_updated",
+    id: 51,
+    inbox_id: 2,
+    labels: ["needs-bot"],
+    meta: { assignee: null }
+  }, { botInboxIds: ["2"], audit: false });
+  assert.equal(result.handled, false);
+  assert.equal(result.reason, "no_assignee");
+});
+
+test("handleAgentAssignmentLabelDrop leaves the label alone when needs-bot is already absent", async () => {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+    if (url.pathname === "/api/v1/accounts/1/conversations/53" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 53, status: "open", inbox_id: 2, labels: ["vip"],
+        meta: { assignee: { id: 12, name: "Agent" } }
+      }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/53/labels" && req.method === "GET") {
+      res.end(JSON.stringify({ payload: ["vip"] }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleAgentAssignmentLabelDrop({
+      event: "conversation_updated",
+      id: 53,
+      inbox_id: 2,
+      meta: { assignee: { id: 12, name: "Agent" } }
+    }, {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      botInboxIds: ["2"],
+      audit: false
+    });
+    assert.equal(result.handled, false);
+    assert.equal(result.reason, "label_absent");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleAgentAssignmentLabelDrop ignores non-update events and can be disabled", async () => {
+  const ignored = await handleAgentAssignmentLabelDrop({
+    event: "message_created",
+    id: 52
+  }, { audit: false });
+  assert.equal(ignored.handled, false);
+  assert.equal(ignored.reason, "not_conversation_update");
+
+  const disabled = await handleAgentAssignmentLabelDrop({
+    event: "conversation_updated",
+    id: 52,
+    meta: { assignee: { id: 9, name: "Agent" } }
+  }, { enabled: false, audit: false });
+  assert.equal(disabled.handled, false);
+  assert.equal(disabled.reason, "disabled");
 });
 
 test("handleResolvedReentryReset ignores non-resolve events and a disabled bot", async () => {

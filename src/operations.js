@@ -964,6 +964,89 @@ export async function handleResolvedReentryReset(payload = {}, options = {}) {
   };
 }
 
+// When a human agent takes a bot-managed conversation (self-assign, or any assignee
+// change), drop the needs-bot label so Fahd stops. The assignee gate already blocks the
+// bot in the common case, but a conversation that was resolved before is released past
+// that gate (an assignee no longer blocks it), so there the label is the only reliable
+// stop signal — dropping it closes that gap. Resolved re-entries still bring the bot
+// back on the customer's next message after a resolve, exactly as before.
+export async function handleAgentAssignmentLabelDrop(payload = {}, options = {}) {
+  const eventName = String(payload.event || payload.name || "").toLowerCase();
+  // Chatwoot reports an assignee change through conversation_updated (some setups also
+  // emit assignee_changed). Anything else is not this handler's concern.
+  if (!eventName.includes("conversation_updated") && !eventName.includes("assignee_changed")) {
+    return { ok: true, handled: false, skipped: true, reason: "not_conversation_update" };
+  }
+
+  const enabled = parseBooleanOption(options.enabled, process.env.BRIDGE_DROP_LABEL_ON_ASSIGN, true);
+  if (!enabled) return { ok: true, handled: false, skipped: true, reason: "disabled" };
+
+  const label = options.label !== undefined
+    ? String(options.label || "").trim()
+    : String(process.env.BRIDGE_REQUIRE_LABEL ?? "needs-bot").trim();
+  if (!label) return { ok: true, handled: false, skipped: true, reason: "no_label" };
+
+  const message = getWebhookMessage(payload);
+  const payloadConversation = getWebhookConversation(payload, message) ||
+    (eventName.startsWith("conversation_") ? payload : null);
+  // Fast path: most conversation_updated events are not assignments. If the payload
+  // already shows no assignee, skip without hitting the API at all.
+  if (payloadConversation && !getConversationAssigneeId(payloadConversation)) {
+    return { ok: true, handled: false, skipped: true, reason: "no_assignee" };
+  }
+
+  const conversationId = getWebhookConversationId(payload, message) ||
+    (eventName.startsWith("conversation_") ? payload?.id : null);
+  if (!conversationId) return { ok: true, handled: false, skipped: true, reason: "missing_conversation_id" };
+
+  const botInboxIds = parseListOption(options.botInboxIds, process.env.BOT_INBOX_IDS, []).map(String);
+  const client = makeClient(options.connection || {});
+
+  let conversation;
+  try {
+    const response = await client.conversationDetails(conversationId);
+    conversation = unwrapConversationResponse(response) || payloadConversation || { id: conversationId };
+  } catch {
+    conversation = payloadConversation || { id: conversationId };
+  }
+  conversation.id = conversation.id || conversationId;
+
+  const inboxId = getConversationInboxId(conversation);
+  if (botInboxIds.length && !botInboxIds.includes(String(inboxId))) {
+    return { ok: true, handled: false, skipped: true, reason: "inbox_not_bot_managed", conversationId, inboxId };
+  }
+
+  // Only act once a human agent is actually on the conversation.
+  const assigneeId = getConversationAssigneeId(conversation);
+  if (!assigneeId) {
+    return { ok: true, handled: false, skipped: true, reason: "no_assignee", conversationId, inboxId };
+  }
+
+  let labels;
+  try {
+    const response = await client.conversationLabels(conversationId);
+    labels = normalizeLabelNames(response?.payload || response || conversation?.labels || []);
+  } catch {
+    labels = normalizeLabelNames(conversation?.labels || []);
+  }
+  if (!labels.includes(label)) {
+    return { ok: true, handled: false, skipped: true, reason: "label_absent", conversationId, inboxId, assigneeId };
+  }
+
+  const nextLabels = labels.filter(item => item !== label);
+  try {
+    await client.updateConversationLabels(conversationId, nextLabels);
+  } catch (error) {
+    return { ok: false, handled: false, reason: "label_update_error", error: error.message, conversationId, inboxId, assigneeId };
+  }
+
+  await auditDepartmentRouter("needs_bot_label_dropped_on_assign", {
+    conversationId, inboxId, assigneeId, label
+  }, options.audit !== false);
+
+  return { ok: true, handled: true, action: "needs_bot_label_dropped", conversationId, inboxId, assigneeId, label };
+}
+
 // --- Customer-silence timeout escalation -------------------------------------
 // When Fahd (the bot) sends a message and the customer goes silent, nobody is
 // watching the clock: the conversation just sits in the bot inbox with needs-bot
