@@ -304,6 +304,11 @@ async function route(req, res) {
         router = await handleResolvedReentryReset(body);
         if (router?.handled !== true) {
           router = await handleAgentAssignmentLabelDrop(body);
+          // Diagnostic: log the outcome for assignment-related events (conversation_updated)
+          // so we can see whether the label drop fired and why. Other events are silent.
+          if (router && router.reason !== "not_conversation_update") {
+            console.log("assign:", JSON.stringify(router));
+          }
         }
       } catch (error) {
         router = {

@@ -989,9 +989,17 @@ export async function handleAgentAssignmentLabelDrop(payload = {}, options = {})
   const message = getWebhookMessage(payload);
   const payloadConversation = getWebhookConversation(payload, message) ||
     (eventName.startsWith("conversation_") ? payload : null);
-  // Fast path: most conversation_updated events are not assignments. If the payload
-  // already shows no assignee, skip without hitting the API at all.
-  if (payloadConversation && !getConversationAssigneeId(payloadConversation)) {
+  // Fast path: skip without an API call only when the payload positively carries
+  // conversation state (a meta/assignee shape) AND shows no assignee. If the payload
+  // does not echo that info, fall through and fetch authoritative details so we never
+  // miss an assignment the webhook payload under-reported.
+  const payloadCarriesAssigneeInfo = Boolean(payloadConversation && (
+    payloadConversation.meta ||
+    payloadConversation.assignee ||
+    payloadConversation.assignee_id != null ||
+    payloadConversation.assigneeId != null
+  ));
+  if (payloadCarriesAssigneeInfo && !getConversationAssigneeId(payloadConversation)) {
     return { ok: true, handled: false, skipped: true, reason: "no_assignee" };
   }
 
