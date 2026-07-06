@@ -24,6 +24,9 @@ import {
   getOpenConversationReport,
   getReportsSummary,
   handleAgentAssignmentLabelDrop,
+  handleDepartmentRouterWebhook,
+  handleLeadSourceRouterWebhook,
+  handleReopenRouterWebhook,
   handleResolvedReentryReset,
   makeClient,
   parsePhoneAssignInput,
@@ -296,18 +299,23 @@ async function route(req, res) {
       router = { ok: true, reason: "forwarded_to_botpress", skippedRouters: true };
     } else {
       try {
-        // Legacy department/reopen routers are retired. Fahd (Botpress) owns all
-        // routing now; the remaining server-side steps are: clear the assignee/team
-        // when a bot-managed conversation is resolved (so the next customer message
-        // flows back to the bot), and drop the needs-bot label when a human agent takes
-        // the conversation (so Fahd stops). A given webhook is only ever one of these.
-        router = await handleResolvedReentryReset(body);
-        if (router?.handled !== true) {
-          router = await handleAgentAssignmentLabelDrop(body);
-          // Diagnostic: log the outcome for assignment-related events (conversation_updated)
-          // so we can see whether the label drop fired and why. Other events are silent.
-          if (router && router.reason !== "not_conversation_update") {
-            console.log("assign:", JSON.stringify(router));
+        const leadSourceRouter = await handleLeadSourceRouterWebhook(body);
+        if (leadSourceRouter.handled) {
+          router = leadSourceRouter;
+        } else {
+          // Legacy department/reopen routers are retired. Fahd (Botpress) owns all
+          // routing now; the remaining server-side steps are: clear the assignee/team
+          // when a bot-managed conversation is resolved (so the next customer message
+          // flows back to the bot), and drop the needs-bot label when a human agent takes
+          // the conversation (so Fahd stops). A given webhook is only ever one of these.
+          router = await handleResolvedReentryReset(body);
+          if (router?.handled !== true) {
+            router = await handleAgentAssignmentLabelDrop(body);
+            // Diagnostic: log the outcome for assignment-related events (conversation_updated)
+            // so we can see whether the label drop fired and why. Other events are silent.
+            if (router && router.reason !== "not_conversation_update") {
+              console.log("assign:", JSON.stringify(router));
+            }
           }
         }
       } catch (error) {

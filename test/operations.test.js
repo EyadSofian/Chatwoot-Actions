@@ -11,6 +11,7 @@ import {
   handleAgentAssignmentLabelDrop,
   handleBotpressCloudHandoff,
   handleDepartmentRouterWebhook,
+  handleLeadSourceRouterWebhook,
   handleReopenRouterWebhook,
   handleResolvedReentryReset,
   isWithinBusinessHours,
@@ -696,6 +697,213 @@ test("parsePhoneAssignInput returns a quick file count without Chatwoot", async 
 
   assert.equal(parsed.phoneCount, 2);
   assert.equal(parsed.sample[0].normalizedPhone, "966558262332");
+});
+
+test("handleLeadSourceRouterWebhook prompts a new inbox conversation without touching assignment", async () => {
+  const messages = [];
+  let customAttributesBody = null;
+  let assignmentCalled = false;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 25,
+        custom_attributes: {},
+        meta: { sender: { id: 10, name: "Customer" }, assignee: { id: 7, name: "Agent" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "GET") {
+      res.end(JSON.stringify({ id: 10, custom_attributes: {} }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10/conversations" && req.method === "GET") {
+      res.end(JSON.stringify({ payload: [{ id: 33, inbox_id: 25 }] }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 901 }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments") {
+      assignmentCalled = true;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleLeadSourceRouterWebhook(leadSourcePayload("hello"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      options: "Facebook|Google Search",
+      promptText: "How did you hear about us?\n{options}",
+      audit: false
+    });
+
+    assert.equal(result.action, "lead_source_prompted");
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].content, "How did you hear about us?\n1. Facebook\n2. Google Search");
+    assert.equal(customAttributesBody.custom_attributes.lead_source_survey_state, "prompted");
+    assert.equal(assignmentCalled, false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleLeadSourceRouterWebhook saves the selected option as a contact label and custom attribute", async () => {
+  const createdLabels = [];
+  let contactLabelsBody = null;
+  let contactBody = null;
+  let conversationAttributesBody = null;
+  let assignmentCalled = false;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 25,
+        custom_attributes: { lead_source_survey_state: "prompted" },
+        meta: { sender: { id: 10, name: "Customer" }, assignee: { id: 7, name: "Agent" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "GET") {
+      res.end(JSON.stringify({ id: 10, custom_attributes: {} }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/labels" && req.method === "GET") {
+      res.end(JSON.stringify({ payload: [{ title: "Facebook" }] }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/labels" && req.method === "POST") {
+      createdLabels.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 55, title: createdLabels.at(-1).title }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10/labels" && req.method === "GET") {
+      res.end(JSON.stringify({ payload: ["vip"] }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10/labels" && req.method === "POST") {
+      contactLabelsBody = await readRequestJson(req);
+      res.end(JSON.stringify({ payload: contactLabelsBody.labels }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "PUT") {
+      contactBody = await readRequestJson(req);
+      res.end(JSON.stringify({ id: 10, ...contactBody }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      conversationAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: conversationAttributesBody.custom_attributes }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/assignments") {
+      assignmentCalled = true;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleLeadSourceRouterWebhook(leadSourcePayload("2"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      options: "Facebook|Google Search",
+      audit: false
+    });
+
+    assert.equal(result.action, "lead_source_collected");
+    assert.equal(result.label, "Google Search");
+    assert.equal(result.createdLabel, true);
+    assert.deepEqual(createdLabels, [{ title: "Google Search", color: "#1f93ff", show_on_sidebar: true }]);
+    assert.deepEqual(contactLabelsBody, { labels: ["vip", "Google Search"] });
+    assert.equal(contactBody.custom_attributes.lead_source, "Google Search");
+    assert.equal(conversationAttributesBody.custom_attributes.lead_source, "Google Search");
+    assert.equal(conversationAttributesBody.custom_attributes.lead_source_survey_state, "answered");
+    assert.equal(assignmentCalled, false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleLeadSourceRouterWebhook skips campaign conversations without writing anything", async () => {
+  let writeCount = 0;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 25,
+        custom_attributes: {
+          api_campaign_status: "sent",
+          api_campaign_active_until: "2099-01-01T00:00:00.000Z"
+        },
+        meta: { sender: { id: 10, name: "Customer" } }
+      }));
+      return;
+    }
+
+    if (req.method !== "GET") writeCount += 1;
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleLeadSourceRouterWebhook(leadSourcePayload("hello"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      options: "Facebook|Google Search",
+      audit: false
+    });
+
+    assert.equal(result.reason, "lead_source_campaign_skipped");
+    assert.equal(writeCount, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
 });
 
 test("getOpenConversationReport can filter unread conversations locally", async () => {
@@ -3187,6 +3395,25 @@ function reopenPayload(overrides = {}) {
       }
     },
     ...overrides
+  };
+}
+
+function leadSourcePayload(content = "hello", overrides = {}) {
+  return {
+    event: "message_created",
+    id: overrides.messageId || 9100,
+    message_type: "incoming",
+    private: false,
+    content,
+    conversation: {
+      id: 33,
+      inbox_id: 25,
+      custom_attributes: {},
+      meta: { sender: { id: 10, name: "Customer" } },
+      ...(overrides.conversation || {})
+    },
+    sender: { id: 10, name: "Customer", ...(overrides.sender || {}) },
+    ...overrides.payload
   };
 }
 

@@ -139,6 +139,17 @@ export class ChatwootClient {
     return this.request(this.accountPath("/teams"));
   }
 
+  listLabels() {
+    return this.request(this.accountPath("/labels"));
+  }
+
+  createLabel({ title, color = "#1f93ff", showOnSidebar = true }) {
+    return this.request(this.accountPath("/labels"), {
+      method: "POST",
+      body: { title, color, show_on_sidebar: showOnSidebar }
+    });
+  }
+
   listTeamAgents(teamId) {
     return this.request(this.accountPath(`/teams/${teamId}/team_members`));
   }
@@ -222,6 +233,21 @@ export class ChatwootClient {
     return this.request(this.accountPath(`/contacts/${contactId}`), {
       method: "PUT",
       body: payload
+    });
+  }
+
+  contactDetails(contactId) {
+    return this.request(this.accountPath(`/contacts/${contactId}`));
+  }
+
+  contactLabels(contactId) {
+    return this.request(this.accountPath(`/contacts/${contactId}/labels`));
+  }
+
+  updateContactLabels(contactId, labels) {
+    return this.request(this.accountPath(`/contacts/${contactId}/labels`), {
+      method: "POST",
+      body: { labels }
     });
   }
 

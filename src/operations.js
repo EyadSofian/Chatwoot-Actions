@@ -29,6 +29,14 @@ const DEFAULT_COMPLAINT_AGENT_NAME = "Abdelrahman Tarek";
 // attribute is always returned by the API and survives redeploys, so the bridge
 // can reliably release such a conversation back to the bot on the next message.
 const BOT_RELEASE_ATTRIBUTE = "engosoft_bot_release";
+const LEAD_SOURCE_ATTRIBUTES = {
+  state: "lead_source_survey_state",
+  promptedAt: "lead_source_survey_prompted_at",
+  answeredAt: "lead_source_survey_answered_at",
+  value: "lead_source",
+  label: "lead_source_label",
+  collectedBy: "lead_source_collected_by"
+};
 
 export function makeClient(connection) {
   return new ChatwootClient(connection || {});
@@ -611,6 +619,124 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
     statusChanged: Boolean(statusResult),
     routing
   };
+}
+
+export async function handleLeadSourceRouterWebhook(payload = {}, options = {}) {
+  const config = buildLeadSourceRouterConfig(options);
+  if (!config.enabled) return { ok: true, handled: false, skipped: true, reason: "lead_source_disabled" };
+  if (config.options.length === 0) return { ok: true, handled: false, skipped: true, reason: "lead_source_no_options" };
+
+  const eventName = String(payload.event || payload.name || "").toLowerCase();
+  const message = getWebhookMessage(payload);
+  const conversationId = getWebhookConversationId(payload, message);
+  if (!conversationId) return { ok: true, handled: false, skipped: true, reason: "lead_source_missing_conversation_id" };
+
+  return withDepartmentRouterLock(`lead_source:${conversationId}`, async () => {
+    if (!eventName.includes("message_created") || !isIncomingWebhookMessage(payload, message)) {
+      return { ok: true, handled: false, skipped: true, reason: "lead_source_event_ignored", conversationId };
+    }
+
+    const client = makeClient(options.connection || {});
+    const conversation = await loadDepartmentConversation(client, payload, message, conversationId, eventName);
+    const inboxId = getConversationInboxId(conversation);
+    if (config.inboxIds.length && !config.inboxIds.includes(String(inboxId))) {
+      return { ok: true, handled: false, skipped: true, reason: "lead_source_inbox_not_enabled", conversationId, inboxId };
+    }
+
+    if (config.skipCampaigns && hasAnyCampaignMarker(conversation, payload, message)) {
+      return { ok: true, handled: true, skipped: true, reason: "lead_source_campaign_skipped", conversationId, inboxId };
+    }
+
+    const customAttributes = getConversationCustomAttributes(conversation);
+    const state = String(customAttributes[LEAD_SOURCE_ATTRIBUTES.state] || "").toLowerCase();
+    const currentConversationValue = String(customAttributes[config.attributeKey] || customAttributes[LEAD_SOURCE_ATTRIBUTES.value] || "").trim();
+    const contactId = getConversationContactId(conversation);
+    if (!contactId) {
+      return { ok: true, handled: false, skipped: true, reason: "lead_source_missing_contact_id", conversationId, inboxId };
+    }
+
+    const contact = await loadLeadSourceContact(client, contactId, conversation);
+    const contactAttributes = getContactCustomAttributes(contact);
+    const currentContactValue = String(contactAttributes[config.attributeKey] || contactAttributes[LEAD_SOURCE_ATTRIBUTES.value] || "").trim();
+    if (currentConversationValue || currentContactValue || state === "answered") {
+      return { ok: true, handled: true, skipped: true, reason: "lead_source_already_collected", conversationId, inboxId, contactId };
+    }
+
+    if (state === "prompted") {
+      const choice = parseLeadSourceChoice(message?.content || payload?.content || "", config.options);
+      if (!choice) {
+        return { ok: true, handled: true, action: "lead_source_awaiting_choice", conversationId, inboxId, contactId };
+      }
+
+      const saved = await saveLeadSourceChoice(client, conversation, contact, choice, config);
+      await auditLeadSourceRouter("lead_source_collected", {
+        conversationId,
+        inboxId,
+        contactId,
+        label: choice.label,
+        value: choice.value,
+        createdLabel: saved.createdLabel
+      }, config.audit);
+      return {
+        ok: true,
+        handled: true,
+        action: "lead_source_collected",
+        conversationId,
+        inboxId,
+        contactId,
+        label: choice.label,
+        value: choice.value,
+        createdLabel: saved.createdLabel
+      };
+    }
+
+    if (config.askOncePerContact) {
+      const newConversation = await isLeadSourceNewConversation(client, conversation, contactId, inboxId);
+      if (!newConversation.isNew) {
+        return {
+          ok: true,
+          handled: true,
+          skipped: true,
+          reason: "lead_source_existing_contact_conversation",
+          conversationId,
+          inboxId,
+          contactId,
+          previousConversationCount: newConversation.previousConversationCount
+        };
+      }
+    }
+
+    const prompt = await client.createMessage(conversationId, {
+      content: buildLeadSourcePrompt(config),
+      message_type: "outgoing",
+      private: false,
+      content_type: "text",
+      content_attributes: {}
+    });
+    const now = new Date().toISOString();
+    const mergedConversationAttributes = {
+      ...customAttributes,
+      [LEAD_SOURCE_ATTRIBUTES.state]: "prompted",
+      [LEAD_SOURCE_ATTRIBUTES.promptedAt]: now
+    };
+    await client.updateConversationCustomAttributes(conversationId, mergedConversationAttributes);
+
+    await auditLeadSourceRouter("lead_source_prompted", {
+      conversationId,
+      inboxId,
+      contactId,
+      messageId: prompt?.id || null
+    }, config.audit);
+    return {
+      ok: true,
+      handled: true,
+      action: "lead_source_prompted",
+      conversationId,
+      inboxId,
+      contactId,
+      messageId: prompt?.id || null
+    };
+  });
 }
 
 export async function handleDepartmentRouterWebhook(payload = {}, options = {}) {
@@ -1268,6 +1394,20 @@ function buildCustomerTimeoutConfig(options = {}) {
   };
 }
 
+function buildLeadSourceRouterConfig(options = {}) {
+  return {
+    enabled: parseBooleanOption(options.enabled, process.env.LEAD_SOURCE_ROUTER_ENABLED, false),
+    inboxIds: parseListOption(options.inboxIds, process.env.LEAD_SOURCE_ROUTER_INBOX_IDS, []).map(String),
+    options: parseLeadSourceOptions(options.options, process.env.LEAD_SOURCE_OPTIONS),
+    attributeKey: String(options.attributeKey ?? process.env.LEAD_SOURCE_ATTRIBUTE_KEY ?? LEAD_SOURCE_ATTRIBUTES.value).trim() || LEAD_SOURCE_ATTRIBUTES.value,
+    promptText: String(options.promptText ?? process.env.LEAD_SOURCE_PROMPT_TEXT ?? "ممكن نعرف حضرتك عرفتنا منين؟\n\n{options}\n\nاكتب رقم الاختيار فقط."),
+    labelColor: String(options.labelColor ?? process.env.LEAD_SOURCE_LABEL_COLOR ?? "#1f93ff"),
+    askOncePerContact: parseBooleanOption(options.askOncePerContact, process.env.LEAD_SOURCE_ASK_ONCE_PER_CONTACT, true),
+    skipCampaigns: parseBooleanOption(options.skipCampaigns, process.env.LEAD_SOURCE_SKIP_CAMPAIGNS, true),
+    audit: options.audit !== false
+  };
+}
+
 // The assign-vs-queue decision reuses Fahd's working hours by default so a
 // timeout escalation behaves like any other handoff: an online agent inside
 // hours, the team Unassigned on Friday / outside hours.
@@ -1338,6 +1478,61 @@ function numberOption(optionValue, envValue, fallback) {
     if (Number.isFinite(parsed)) return parsed;
   }
   return fallback;
+}
+
+function parseLeadSourceOptions(optionValue, envValue) {
+  const source = optionValue !== undefined ? optionValue : envValue;
+  if (source === undefined || source === null || source === "") return [];
+  const rows = Array.isArray(source)
+    ? source
+    : String(source).split(/[\n|,;]+/);
+  const seen = new Set();
+  const options = [];
+  for (const row of rows) {
+    const raw = typeof row === "object" && row !== null
+      ? String(row.label || row.title || row.value || "").trim()
+      : String(row || "").trim();
+    if (!raw) continue;
+    const key = normalizeLeadSourceText(raw);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    options.push({
+      index: options.length + 1,
+      label: raw,
+      value: raw,
+      key
+    });
+  }
+  return options;
+}
+
+function buildLeadSourcePrompt(config) {
+  const optionLines = config.options.map(option => `${option.index}. ${option.label}`).join("\n");
+  return config.promptText.includes("{options}")
+    ? config.promptText.replace("{options}", optionLines)
+    : `${config.promptText}\n\n${optionLines}`;
+}
+
+function parseLeadSourceChoice(content, options) {
+  const normalized = normalizeLeadSourceText(content);
+  if (!normalized) return null;
+  const numeric = Number(normalized);
+  if (Number.isInteger(numeric) && numeric >= 1 && numeric <= options.length) {
+    return options[numeric - 1];
+  }
+  return options.find(option => option.key === normalized) || null;
+}
+
+function normalizeLeadSourceText(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\u0660-\u0669]/g, digit => String(digit.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, digit => String(digit.charCodeAt(0) - 0x06F0))
+    .replace(/[\u064B-\u065F\u0670]/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function buildDepartmentRouterConfig(options = {}) {
@@ -1714,6 +1909,104 @@ function getLocalCampaignMarker(localRoute) {
     id: localRoute?.campaignId || "local_campaign",
     expiresAt: expiresAt?.toISOString() || null
   };
+}
+
+function hasAnyCampaignMarker(...items) {
+  return items.filter(Boolean).some(item =>
+    Boolean(getConversationCampaignId(item)) ||
+    hasExternalCampaignMetadata(item)
+  );
+}
+
+async function loadLeadSourceContact(client, contactId, conversation) {
+  try {
+    const response = await client.contactDetails(contactId);
+    return unwrapConversationResponse(response) || response || getConversationContact(conversation) || { id: contactId };
+  } catch {
+    return getConversationContact(conversation) || { id: contactId };
+  }
+}
+
+function getConversationContact(conversation) {
+  return conversation?.contact || conversation?.meta?.sender || conversation?.sender || null;
+}
+
+function getContactCustomAttributes(contact) {
+  return contact?.custom_attributes || contact?.customAttributes || {};
+}
+
+async function isLeadSourceNewConversation(client, conversation, contactId, inboxId) {
+  try {
+    const response = await client.contactConversations(contactId);
+    const rows = getPayload(response);
+    const currentId = String(conversation.id || "");
+    const previousConversations = rows.filter(row => {
+      if (currentId && String(row.id) === currentId) return false;
+      return String(getConversationInboxId(row)) === String(inboxId);
+    });
+    return {
+      isNew: previousConversations.length === 0,
+      previousConversationCount: previousConversations.length
+    };
+  } catch (error) {
+    return {
+      isNew: false,
+      previousConversationCount: 0,
+      error: error.message
+    };
+  }
+}
+
+async function saveLeadSourceChoice(client, conversation, contact, choice, config) {
+  const contactId = contact.id;
+  const now = new Date().toISOString();
+  const createdLabel = await ensureLeadSourceLabel(client, choice.label, config);
+  await addLeadSourceLabelToContact(client, contactId, choice.label);
+
+  const contactAttributes = {
+    ...getContactCustomAttributes(contact),
+    [config.attributeKey]: choice.value,
+    [LEAD_SOURCE_ATTRIBUTES.value]: choice.value,
+    [LEAD_SOURCE_ATTRIBUTES.label]: choice.label,
+    [LEAD_SOURCE_ATTRIBUTES.answeredAt]: now,
+    [LEAD_SOURCE_ATTRIBUTES.collectedBy]: "customer"
+  };
+  await client.updateContact(contactId, { custom_attributes: contactAttributes });
+
+  const conversationAttributes = {
+    ...getConversationCustomAttributes(conversation),
+    [config.attributeKey]: choice.value,
+    [LEAD_SOURCE_ATTRIBUTES.value]: choice.value,
+    [LEAD_SOURCE_ATTRIBUTES.label]: choice.label,
+    [LEAD_SOURCE_ATTRIBUTES.answeredAt]: now,
+    [LEAD_SOURCE_ATTRIBUTES.collectedBy]: "customer",
+    [LEAD_SOURCE_ATTRIBUTES.state]: "answered"
+  };
+  await client.updateConversationCustomAttributes(conversation.id, conversationAttributes);
+
+  return { createdLabel };
+}
+
+async function ensureLeadSourceLabel(client, label, config) {
+  const response = await client.listLabels();
+  const labels = normalizeLabelNames(getPayload(response));
+  if (labels.includes(label)) return false;
+
+  try {
+    await client.createLabel({ title: label, color: config.labelColor });
+    return true;
+  } catch (error) {
+    if (error.status === 422) return false;
+    throw error;
+  }
+}
+
+async function addLeadSourceLabelToContact(client, contactId, label) {
+  const response = await client.contactLabels(contactId);
+  const labels = normalizeLabelNames(response?.payload || response || []);
+  if (labels.includes(label)) return false;
+  await client.updateContactLabels(contactId, [...labels, label]);
+  return true;
 }
 
 function parseCampaignMarkerTtlSeconds(optionValue) {
@@ -2725,6 +3018,17 @@ async function auditDepartmentRouter(action, details, enabled = true) {
     action,
     actor: { name: "Department Router", type: "automation" },
     summary: `Department router ${action} for conversation ${details.conversationId}`,
+    metadata: details
+  });
+}
+
+async function auditLeadSourceRouter(action, details, enabled = true) {
+  if (!enabled) return;
+
+  await appendAudit({
+    action,
+    actor: { name: "Lead Source Router", type: "automation" },
+    summary: `Lead source router handled conversation ${details.conversationId}: ${details.label || details.reason || action}`,
     metadata: details
   });
 }
