@@ -179,7 +179,7 @@ Notes:
 
 ## Lead Source Survey
 
-The Lead Source Router asks brand-new customers in selected inboxes how they heard about the business. It never assigns, unassigns, changes team, opens, resolves, or otherwise changes routing. It only sends the question, reads the customer's numeric reply, ensures the selected label exists, adds that label to the Chatwoot contact, and stores the selected value in contact and conversation custom attributes.
+The Lead Source Router asks brand-new customers in selected inboxes how they heard about the business. It never assigns, unassigns, changes team, opens, resolves, or otherwise changes routing. It only sends the question, reads the customer's numeric reply, ensures the selected label exists, adds that label to the Chatwoot contact **and the conversation**, stores the selected value in contact and conversation custom attributes, and finally sends a thank-you/confirmation message.
 
 Campaign/broadcast conversations are skipped completely. If the conversation has a native Chatwoot `campaign_id` or an external uploader marker such as `api_campaign_status`, `api_campaign_label`, `api_campaign_active_until`, `last_api_campaign_label`, or any `api_sent_*` key, the router does nothing.
 
@@ -194,9 +194,14 @@ LEAD_SOURCE_SKIP_CAMPAIGNS=true
 LEAD_SOURCE_ASK_ONCE_PER_CONTACT=true
 LEAD_SOURCE_LABEL_COLOR=#1f93ff
 LEAD_SOURCE_PROMPT_TEXT=How did you hear about us?\n\n{options}\n\nReply with the option number only.
+LEAD_SOURCE_CONFIRM_TEXT=Thanks! One of our advisors will reach out shortly.
 ```
 
-`LEAD_SOURCE_OPTIONS` is required; the app does not add default choices. Separate choices with `|`, comma, semicolon, or new lines. The exact selected option text is used as the Chatwoot contact label title.
+`LEAD_SOURCE_OPTIONS` is required; the app does not add default choices. Separate choices with `|`, comma, semicolon, or new lines. The exact selected option text is used as the Chatwoot label title.
+
+`LEAD_SOURCE_PROMPT_TEXT` and `LEAD_SOURCE_CONFIRM_TEXT` support `\n` for line breaks: a literal `\n` in the env value is converted to a real newline before the message is sent (Node keeps env values verbatim, so without this it would print `\n` to the customer). `{options}` in the prompt is replaced with the numbered choice list. Set `LEAD_SOURCE_CONFIRM_TEXT=` (empty) to skip the confirmation message.
+
+Labelling is best-effort: Chatwoot slugifies label titles and rejects some characters, so if a label can't be created or applied the router still records the answer in the `lead_source` custom attribute and still thanks the customer — the customer's reply is never lost to a label error.
 
 ## Department Router
 
