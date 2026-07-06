@@ -179,24 +179,35 @@ Notes:
 
 ## Lead Source Survey
 
-The Lead Source Router asks brand-new customers in selected inboxes how they heard about the business. It never assigns, unassigns, changes team, opens, resolves, or otherwise changes routing. It only sends the question, reads the customer's numeric reply, ensures the selected label exists, adds that label to the Chatwoot contact, and stores the selected value in contact and conversation custom attributes.
+The Lead Source Router asks brand-new customers in selected inboxes how they heard about the business. It never assigns, unassigns, changes team, opens, resolves, or otherwise changes routing. It only sends the question, reads the customer's numeric reply, ensures the selected label exists, adds that label to the Chatwoot contact **and the conversation**, stores the selected value in contact and conversation custom attributes, and finally sends a thank-you/confirmation message.
+
+The survey only starts on a **genuinely fresh conversation**. It is skipped when a human agent is already assigned (`LEAD_SOURCE_SKIP_ASSIGNED`, default on) or when the conversation already carries a message history — an agent reply, or an earlier customer message before this one (`LEAD_SOURCE_NEW_CONVERSATIONS_ONLY`, default on). Combined with `LEAD_SOURCE_ASK_ONCE_PER_CONTACT`, a returning customer or an in-progress chat is never interrupted.
 
 Campaign/broadcast conversations are skipped completely. If the conversation has a native Chatwoot `campaign_id` or an external uploader marker such as `api_campaign_status`, `api_campaign_label`, `api_campaign_active_until`, `last_api_campaign_label`, or any `api_sent_*` key, the router does nothing.
 
-Railway example:
+Railway example (Arabic prompt, English labels):
 
 ```text
 LEAD_SOURCE_ROUTER_ENABLED=true
 LEAD_SOURCE_ROUTER_INBOX_IDS=25
-LEAD_SOURCE_OPTIONS=Facebook|Instagram|YouTube|TikTok|Google|Snapchat|Referral|Other
+LEAD_SOURCE_OPTIONS=فيسبوك=facebook|إنستجرام=instagram|يوتيوب=youtube|تيك توك=tiktok|جوجل=google|سناب شات=snapchat|ترشيح=referral|أخرى=other
 LEAD_SOURCE_ATTRIBUTE_KEY=lead_source
 LEAD_SOURCE_SKIP_CAMPAIGNS=true
 LEAD_SOURCE_ASK_ONCE_PER_CONTACT=true
+LEAD_SOURCE_SKIP_ASSIGNED=true
+LEAD_SOURCE_NEW_CONVERSATIONS_ONLY=true
 LEAD_SOURCE_LABEL_COLOR=#1f93ff
-LEAD_SOURCE_PROMPT_TEXT=How did you hear about us?\n\n{options}\n\nReply with the option number only.
+LEAD_SOURCE_PROMPT_TEXT=أهلاً بيك مع إنجوسوفت 👋\nممكن نعرف حضرتك عرفتنا منين؟\n\n{options}\n\nاكتب رقم الاختيار فقط.
+LEAD_SOURCE_CONFIRM_TEXT=شكرًا لتواصلك مع إنجوسوفت 🌟\nتم تسجيل بياناتك بنجاح، وسيتواصل معك أحد مستشارينا التعليميين في أقرب وقت. 🙏
 ```
 
-`LEAD_SOURCE_OPTIONS` is required; the app does not add default choices. Separate choices with `|`, comma, semicolon, or new lines. The exact selected option text is used as the Chatwoot contact label title.
+`LEAD_SOURCE_OPTIONS` is required; the app does not add default choices. Separate choices with `|`, comma, semicolon, or new lines.
+
+**Display vs. label value:** a choice may be written as `display=value` (or `display=>value`), e.g. `فيسبوك=facebook`. The customer sees the display (`فيسبوك`); the Chatwoot label title and the `lead_source` attribute use the value (`facebook`). This keeps labels ASCII — Chatwoot slugifies label titles and rejects some Arabic or spaced titles — while the prompt stays in Arabic. Without a separator the display is used for both. Customers can reply with the choice number, the display text, or the value.
+
+`LEAD_SOURCE_PROMPT_TEXT` and `LEAD_SOURCE_CONFIRM_TEXT` support `\n` for line breaks: a literal `\n` in the env value is converted to a real newline before the message is sent (Node keeps env values verbatim, so without this it would print `\n` to the customer). `{options}` in the prompt is replaced with the numbered choice list. Set `LEAD_SOURCE_CONFIRM_TEXT=` (empty) to skip the confirmation message.
+
+Labelling is best-effort: if a label still can't be created or applied, the router records the answer in the `lead_source` custom attribute and thanks the customer anyway — the reply is never lost to a label error.
 
 ## Department Router
 

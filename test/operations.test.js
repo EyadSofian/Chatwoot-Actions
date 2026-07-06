@@ -713,7 +713,7 @@ test("handleLeadSourceRouterWebhook prompts a new inbox conversation without tou
         status: "open",
         inbox_id: 25,
         custom_attributes: {},
-        meta: { sender: { id: 10, name: "Customer" }, assignee: { id: 7, name: "Agent" } }
+        meta: { sender: { id: 10, name: "Customer" }, assignee: null }
       }));
       return;
     }
@@ -770,11 +770,187 @@ test("handleLeadSourceRouterWebhook prompts a new inbox conversation without tou
   }
 });
 
+test("handleLeadSourceRouterWebhook skips a conversation already assigned to an agent", async () => {
+  let promptSent = false;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 25,
+        custom_attributes: {},
+        meta: { sender: { id: 10, name: "Customer" }, assignee: { id: 7, name: "Agent" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "GET") {
+      res.end(JSON.stringify({ id: 10, custom_attributes: {} }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      promptSent = true;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleLeadSourceRouterWebhook(leadSourcePayload("hello"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      options: "Facebook|Google Search",
+      audit: false
+    });
+
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "lead_source_conversation_assigned");
+    assert.equal(result.assigneeId, 7);
+    assert.equal(promptSent, false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleLeadSourceRouterWebhook skips a conversation that already has a message history", async () => {
+  let promptSent = false;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 25,
+        custom_attributes: {},
+        meta: { sender: { id: 10, name: "Customer" }, assignee: null },
+        // An earlier customer message plus an agent reply already exist; the message
+        // that triggered this webhook is id 9100 (see leadSourcePayload).
+        messages: [
+          { id: 42, message_type: 0, private: false, content: "مرحبا" },
+          { id: 43, message_type: 1, private: false, content: "أهلا بيك" },
+          { id: 9100, message_type: 0, private: false, content: "hello" }
+        ]
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "GET") {
+      res.end(JSON.stringify({ id: 10, custom_attributes: {} }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      promptSent = true;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleLeadSourceRouterWebhook(leadSourcePayload("hello"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      options: "Facebook|Google Search",
+      audit: false
+    });
+
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "lead_source_existing_conversation_messages");
+    assert.equal(promptSent, false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleLeadSourceRouterWebhook renders literal \\n from env-style prompt text as real newlines", async () => {
+  const messages = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 25,
+        custom_attributes: {},
+        meta: { sender: { id: 10, name: "Customer" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "GET") {
+      res.end(JSON.stringify({ id: 10, custom_attributes: {} }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10/conversations" && req.method === "GET") {
+      res.end(JSON.stringify({ payload: [{ id: 33, inbox_id: 25 }] }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 901 }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      res.end(JSON.stringify({ custom_attributes: (await readRequestJson(req)).custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    // The prompt text carries literal backslash-n characters, exactly as a value set
+    // in a .env / Railway variable would arrive on process.env.
+    const result = await handleLeadSourceRouterWebhook(leadSourcePayload("hello"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      options: "Facebook|Google Search",
+      promptText: "أهلاً بيك مع إنجوسوفت 👋\\nعرفتنا منين؟\\n\\n{options}\\n\\nاكتب رقم الاختيار فقط.",
+      audit: false
+    });
+
+    assert.equal(result.action, "lead_source_prompted");
+    assert.equal(
+      messages[0].content,
+      "أهلاً بيك مع إنجوسوفت 👋\nعرفتنا منين؟\n\n1. Facebook\n2. Google Search\n\nاكتب رقم الاختيار فقط."
+    );
+    // No stray backslash-n is left in the rendered message.
+    assert.equal(messages[0].content.includes("\\n"), false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("handleLeadSourceRouterWebhook saves the selected option as a contact label and custom attribute", async () => {
   const createdLabels = [];
   let contactLabelsBody = null;
+  let conversationLabelsBody = null;
   let contactBody = null;
   let conversationAttributesBody = null;
+  const outgoingMessages = [];
   let assignmentCalled = false;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");
@@ -818,6 +994,17 @@ test("handleLeadSourceRouterWebhook saves the selected option as a contact label
       return;
     }
 
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/labels" && req.method === "GET") {
+      res.end(JSON.stringify({ payload: [] }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/labels" && req.method === "POST") {
+      conversationLabelsBody = await readRequestJson(req);
+      res.end(JSON.stringify({ payload: conversationLabelsBody.labels }));
+      return;
+    }
+
     if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "PUT") {
       contactBody = await readRequestJson(req);
       res.end(JSON.stringify({ id: 10, ...contactBody }));
@@ -827,6 +1014,12 @@ test("handleLeadSourceRouterWebhook saves the selected option as a contact label
     if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
       conversationAttributesBody = await readRequestJson(req);
       res.end(JSON.stringify({ custom_attributes: conversationAttributesBody.custom_attributes }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 950 + outgoingMessages.length }));
       return;
     }
 
@@ -846,18 +1039,214 @@ test("handleLeadSourceRouterWebhook saves the selected option as a contact label
       enabled: true,
       inboxIds: ["25"],
       options: "Facebook|Google Search",
+      confirmText: "Thank you! One of our advisors will contact you shortly.",
       audit: false
     });
 
     assert.equal(result.action, "lead_source_collected");
     assert.equal(result.label, "Google Search");
     assert.equal(result.createdLabel, true);
+    assert.equal(result.contactLabeled, true);
+    assert.equal(result.conversationLabeled, true);
+    assert.deepEqual(result.labelErrors, []);
     assert.deepEqual(createdLabels, [{ title: "Google Search", color: "#1f93ff", show_on_sidebar: true }]);
     assert.deepEqual(contactLabelsBody, { labels: ["vip", "Google Search"] });
+    assert.deepEqual(conversationLabelsBody, { labels: ["Google Search"] });
     assert.equal(contactBody.custom_attributes.lead_source, "Google Search");
     assert.equal(conversationAttributesBody.custom_attributes.lead_source, "Google Search");
     assert.equal(conversationAttributesBody.custom_attributes.lead_source_survey_state, "answered");
+    // The customer is thanked after a valid selection.
+    assert.equal(outgoingMessages.length, 1);
+    assert.equal(outgoingMessages[0].content, "Thank you! One of our advisors will contact you shortly.");
+    assert.equal(result.confirmationMessageId, 951);
     assert.equal(assignmentCalled, false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleLeadSourceRouterWebhook still saves the answer and thanks the customer when the label API fails", async () => {
+  let contactBody = null;
+  let conversationAttributesBody = null;
+  const outgoingMessages = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 25,
+        custom_attributes: { lead_source_survey_state: "prompted" },
+        meta: { sender: { id: 10, name: "Customer" }, assignee: { id: 7, name: "Agent" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "GET") {
+      res.end(JSON.stringify({ id: 10, custom_attributes: {} }));
+      return;
+    }
+
+    // Every label endpoint rejects the request (e.g. Chatwoot refuses the title).
+    if (url.pathname.endsWith("/labels")) {
+      res.statusCode = 422;
+      res.end(JSON.stringify({ error: "invalid label" }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "PUT") {
+      contactBody = await readRequestJson(req);
+      res.end(JSON.stringify({ id: 10, ...contactBody }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      conversationAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: conversationAttributesBody.custom_attributes }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      outgoingMessages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 960 + outgoingMessages.length }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleLeadSourceRouterWebhook(leadSourcePayload("1"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      options: "Facebook|Google Search",
+      confirmText: "شكرًا لك",
+      audit: false
+    });
+
+    // The label calls failed, but the answer is still persisted and the customer thanked.
+    assert.equal(result.action, "lead_source_collected");
+    assert.equal(result.label, "Facebook");
+    assert.equal(result.contactLabeled, false);
+    assert.equal(result.conversationLabeled, false);
+    assert.equal(result.labelErrors.length > 0, true);
+    assert.equal(contactBody.custom_attributes.lead_source, "Facebook");
+    assert.equal(conversationAttributesBody.custom_attributes.lead_source, "Facebook");
+    assert.equal(conversationAttributesBody.custom_attributes.lead_source_survey_state, "answered");
+    assert.deepEqual(outgoingMessages.map(item => item.content), ["شكرًا لك"]);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleLeadSourceRouterWebhook creates an English label from an Arabic display choice", async () => {
+  const createdLabels = [];
+  let contactLabelsBody = null;
+  let conversationLabelsBody = null;
+  let contactBody = null;
+  let conversationAttributesBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 25,
+        custom_attributes: { lead_source_survey_state: "prompted" },
+        meta: { sender: { id: 10, name: "Customer" }, assignee: null }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "GET") {
+      res.end(JSON.stringify({ id: 10, custom_attributes: {} }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/labels" && req.method === "GET") {
+      res.end(JSON.stringify({ payload: [] }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/labels" && req.method === "POST") {
+      createdLabels.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 55, title: createdLabels.at(-1).title }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10/labels" && req.method === "GET") {
+      res.end(JSON.stringify({ payload: [] }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10/labels" && req.method === "POST") {
+      contactLabelsBody = await readRequestJson(req);
+      res.end(JSON.stringify({ payload: contactLabelsBody.labels }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/labels" && req.method === "GET") {
+      res.end(JSON.stringify({ payload: [] }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/labels" && req.method === "POST") {
+      conversationLabelsBody = await readRequestJson(req);
+      res.end(JSON.stringify({ payload: conversationLabelsBody.labels }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "PUT") {
+      contactBody = await readRequestJson(req);
+      res.end(JSON.stringify({ id: 10, ...contactBody }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      conversationAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: conversationAttributesBody.custom_attributes }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      res.end(JSON.stringify({ id: 980 }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    // Customer picks option 2 (سناب شات); the Chatwoot label must be the English value.
+    const result = await handleLeadSourceRouterWebhook(leadSourcePayload("2"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      options: "فيسبوك=facebook|سناب شات=snapchat",
+      confirmText: "",
+      audit: false
+    });
+
+    assert.equal(result.action, "lead_source_collected");
+    assert.equal(result.label, "سناب شات");        // Arabic display preserved in the result/audit
+    assert.equal(result.value, "snapchat");         // English value stored
+    assert.deepEqual(createdLabels, [{ title: "snapchat", color: "#1f93ff", show_on_sidebar: true }]);
+    assert.deepEqual(contactLabelsBody, { labels: ["snapchat"] });
+    assert.deepEqual(conversationLabelsBody, { labels: ["snapchat"] });
+    assert.equal(contactBody.custom_attributes.lead_source, "snapchat");
+    assert.equal(contactBody.custom_attributes.lead_source_label, "سناب شات");
+    assert.equal(conversationAttributesBody.custom_attributes.lead_source, "snapchat");
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
