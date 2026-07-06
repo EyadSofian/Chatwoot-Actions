@@ -713,6 +713,39 @@ export async function handleLeadSourceRouterWebhook(payload = {}, options = {}) 
       };
     }
 
+    // Stay out of conversations a human agent already owns — the bot must not
+    // interrupt an agent who picked up the chat.
+    if (config.skipAssigned) {
+      const assigneeId = getConversationAssigneeId(conversation);
+      if (assigneeId) {
+        return {
+          ok: true,
+          handled: true,
+          skipped: true,
+          reason: "lead_source_conversation_assigned",
+          conversationId,
+          inboxId,
+          contactId,
+          assigneeId
+        };
+      }
+    }
+
+    // Only greet a genuinely fresh conversation. If it already carries a message
+    // history (an agent reply, or an earlier customer message before this one), it is
+    // mid-flow and the survey stays out of it.
+    if (config.newConversationsOnly && leadSourceConversationHasHistory(conversation, message)) {
+      return {
+        ok: true,
+        handled: true,
+        skipped: true,
+        reason: "lead_source_existing_conversation_messages",
+        conversationId,
+        inboxId,
+        contactId
+      };
+    }
+
     if (config.askOncePerContact) {
       const newConversation = await isLeadSourceNewConversation(client, conversation, contactId, inboxId);
       if (!newConversation.isNew) {
@@ -1437,6 +1470,12 @@ function buildLeadSourceRouterConfig(options = {}) {
     ),
     labelColor: String(options.labelColor ?? process.env.LEAD_SOURCE_LABEL_COLOR ?? "#1f93ff"),
     askOncePerContact: parseBooleanOption(options.askOncePerContact, process.env.LEAD_SOURCE_ASK_ONCE_PER_CONTACT, true),
+    // Never inject the survey into a conversation a human agent already picked up.
+    skipAssigned: parseBooleanOption(options.skipAssigned, process.env.LEAD_SOURCE_SKIP_ASSIGNED, true),
+    // Only greet genuinely fresh conversations. A conversation that already carries
+    // a message history (an agent reply, or an earlier customer message) is mid-flow,
+    // so the survey stays out of it.
+    newConversationsOnly: parseBooleanOption(options.newConversationsOnly, process.env.LEAD_SOURCE_NEW_CONVERSATIONS_ONLY, true),
     skipCampaigns: parseBooleanOption(options.skipCampaigns, process.env.LEAD_SOURCE_SKIP_CAMPAIGNS, true),
     audit: options.audit !== false
   };
@@ -1534,21 +1573,58 @@ function parseLeadSourceOptions(optionValue, envValue) {
   const seen = new Set();
   const options = [];
   for (const row of rows) {
-    const raw = typeof row === "object" && row !== null
-      ? String(row.label || row.title || row.value || "").trim()
-      : String(row || "").trim();
-    if (!raw) continue;
-    const key = normalizeLeadSourceText(raw);
+    // Each choice may map a customer-facing display to a stored/label value via
+    // "display=value" (or "display=>value"), e.g. "فيسبوك=facebook". The customer
+    // sees the display; the Chatwoot label and lead_source attribute use the value.
+    // This keeps labels ASCII (Chatwoot slugifies and rejects some Arabic/spaced
+    // titles) while the prompt stays in Arabic. Without a separator, value = display.
+    let display;
+    let value;
+    if (typeof row === "object" && row !== null) {
+      display = String(row.label || row.title || row.display || row.value || "").trim();
+      value = String(row.value || row.label || row.title || row.display || "").trim();
+    } else {
+      const raw = String(row || "").trim();
+      if (!raw) continue;
+      const separator = raw.match(/\s*=>?\s*/);
+      if (separator && separator.index > 0) {
+        display = raw.slice(0, separator.index).trim();
+        value = raw.slice(separator.index + separator[0].length).trim();
+      } else {
+        display = raw;
+        value = raw;
+      }
+    }
+    if (!display) continue;
+    value = value || display;
+    const key = normalizeLeadSourceText(display);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     options.push({
       index: options.length + 1,
-      label: raw,
-      value: raw,
-      key
+      label: display,
+      value,
+      key,
+      valueKey: normalizeLeadSourceText(value)
     });
   }
   return options;
+}
+
+// True when the conversation is already underway rather than a first contact. Any
+// public agent/bot reply, or any earlier public customer message besides the one
+// that just triggered this webhook, counts as history. Chatwoot's conversation
+// details embed the recent `messages`, so this needs no extra API call; when no
+// messages are embedded we return false and let the survey proceed.
+function leadSourceConversationHasHistory(conversation, currentMessage) {
+  const messages = normalizeRows(conversation?.messages).filter(isPublicMessage);
+  if (messages.length === 0) return false;
+  if (messages.some(isOutgoingPublicMessage)) return true;
+  const currentId = currentMessage?.id == null ? "" : String(currentMessage.id);
+  const priorIncoming = messages.filter(message =>
+    isCustomerMessage(message) && (!currentId || String(message?.id || "") !== currentId)
+  );
+  return priorIncoming.length > 0;
 }
 
 function buildLeadSourcePrompt(config) {
@@ -1565,7 +1641,8 @@ function parseLeadSourceChoice(content, options) {
   if (Number.isInteger(numeric) && numeric >= 1 && numeric <= options.length) {
     return options[numeric - 1];
   }
-  return options.find(option => option.key === normalized) || null;
+  // Accept the customer typing either the displayed choice or its mapped value.
+  return options.find(option => option.key === normalized || option.valueKey === normalized) || null;
 }
 
 function normalizeLeadSourceText(value) {
@@ -2006,14 +2083,16 @@ async function saveLeadSourceChoice(client, conversation, contact, choice, confi
   const contactId = contact.id;
   const now = new Date().toISOString();
 
-  // Tagging is best-effort. Chatwoot slugifies label titles and rejects some
-  // characters (spaces, punctuation) with a 422, and a labels endpoint can be
-  // unavailable; none of that should lose the customer's answer. We record the
-  // outcome of each step and always fall through to persist the custom attribute,
-  // which is the durable record of the lead source.
-  const createdLabel = await runLeadSourceLabelStep(() => ensureLeadSourceLabel(client, choice.label, config));
-  const contactLabeled = await runLeadSourceLabelStep(() => addLeadSourceLabelToContact(client, contactId, choice.label));
-  const conversationLabeled = await runLeadSourceLabelStep(() => addLeadSourceLabelToConversation(client, conversation.id, choice.label));
+  // The Chatwoot label title is the mapped value (kept ASCII, e.g. "facebook"),
+  // not the Arabic display — Chatwoot slugifies titles and rejects some Arabic or
+  // spaced titles. Tagging is best-effort: a rejected title or an unavailable labels
+  // endpoint (422/error) must never lose the customer's answer. We record the outcome
+  // of each step and always fall through to persist the custom attribute, which is
+  // the durable record of the lead source.
+  const labelTitle = choice.value;
+  const createdLabel = await runLeadSourceLabelStep(() => ensureLeadSourceLabel(client, labelTitle, config));
+  const contactLabeled = await runLeadSourceLabelStep(() => addLeadSourceLabelToContact(client, contactId, labelTitle));
+  const conversationLabeled = await runLeadSourceLabelStep(() => addLeadSourceLabelToConversation(client, conversation.id, labelTitle));
   const labelErrors = [createdLabel.error, contactLabeled.error, conversationLabeled.error].filter(Boolean);
 
   const contactAttributes = {
