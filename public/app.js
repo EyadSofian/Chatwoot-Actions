@@ -1,5 +1,6 @@
 const state = {
-  tab: "actions",
+  reportsOnly: new URLSearchParams(window.location.search).get("view") === "reports",
+  tab: new URLSearchParams(window.location.search).get("view") === "reports" ? "analytics" : "actions",
   lang: loadLanguage(),
   connection: loadConnection(),
   agents: [],
@@ -554,13 +555,25 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("refresh-button").addEventListener("click", refreshActiveTab);
   render();
   refreshBaseData();
-  loadAutomationSettings({ quiet: true }).catch(error => notify(error.message || "Request failed", "bad"));
+  if (state.reportsOnly) {
+    refreshActiveTab().catch(error => notify(error.message || "Request failed", "bad"));
+  } else {
+    loadAutomationSettings({ quiet: true }).catch(error => notify(error.message || "Request failed", "bad"));
+  }
 });
+
+// In reports-only mode (?view=reports) show just the reporting tabs so managers get
+// a clean, standalone analytics dashboard instead of the full ops console.
+function visibleTabs() {
+  if (!state.reportsOnly) return tabs;
+  const allowed = new Set(["analytics", "campaign_analytics", "email_digest"]);
+  return tabs.filter(([id]) => allowed.has(id));
+}
 
 function renderNav() {
   const containers = [document.getElementById("nav"), document.getElementById("compact-nav")].filter(Boolean);
   containers.forEach(nav => {
-    nav.innerHTML = tabs.map(([id, label]) => (
+    nav.innerHTML = visibleTabs().map(([id, label]) => (
       `<button type="button" data-tab="${id}" class="${state.tab === id ? "active" : ""}">${tr(label)}</button>`
     )).join("");
     nav.querySelectorAll("button").forEach(button => {
@@ -1283,7 +1296,7 @@ async function runAction(action) {
 }
 
 async function refreshBaseData() {
-  if (!hasConnection()) return;
+  if (!hasConnection() && !state.reportsOnly) return;
   try {
     const data = await api("/api/chatwoot/probe", { connection: state.connection });
     state.agents = data.agents || [];
@@ -1553,7 +1566,7 @@ function analyticsView() {
 }
 
 async function loadAnalytics() {
-  if (!hasConnection()) return notify(tr("Save Chatwoot connection first."), "warn");
+  if (!hasConnection() && !state.reportsOnly) return notify(tr("Save Chatwoot connection first."), "warn");
   const filters = {
     since: value("analyticsSince") || "",
     until: value("analyticsUntil") || "",
@@ -2039,6 +2052,7 @@ function setEmbeddedMode() {
   } catch {
     document.body.classList.add("embedded");
   }
+  document.body.classList.toggle("reports-only", state.reportsOnly);
 }
 
 function loadLanguage() {
@@ -2064,6 +2078,7 @@ function requestDashboardContext() {
 function renderContextBox() {
   const box = document.getElementById("dashboard-context");
   if (!box) return;
+  if (state.reportsOnly) { box.style.display = "none"; return; }
   const agent = state.appContext?.currentAgent;
   const contact = state.appContext?.contact;
   const conversation = state.appContext?.conversation;
