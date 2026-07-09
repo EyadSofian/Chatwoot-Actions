@@ -13,6 +13,7 @@ import {
   handleDepartmentRouterWebhook,
   handleLeadSourceRouterWebhook,
   handleReopenRouterWebhook,
+  handleResolveSurveyWebhook,
   handleResolvedReentryReset,
   isWithinBusinessHours,
   normalizePhone,
@@ -1290,6 +1291,212 @@ test("handleLeadSourceRouterWebhook skips campaign conversations without writing
 
     assert.equal(result.reason, "lead_source_campaign_skipped");
     assert.equal(writeCount, 0);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleResolveSurveyWebhook asks for a rating on resolve and records the responsible agent", async () => {
+  const messages = [];
+  let customAttributesBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "resolved",
+        inbox_id: 25,
+        custom_attributes: {},
+        meta: { sender: { id: 10, name: "Customer" }, assignee: { id: 7, name: "Mona" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 700 + messages.length }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleResolveSurveyWebhook(resolveStatusPayload("resolved"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      ackText: "تم تسجيل بياناتك بنجاح ✅",
+      ratingText: "قيّم خدمتنا{agent} من {min} إلى {max}",
+      agentTemplate: " ومع الموظف ({agent})",
+      audit: false
+    });
+
+    assert.equal(result.action, "resolve_survey_prompted");
+    assert.equal(result.agentId, 7);
+    assert.equal(result.agentName, "Mona");
+    assert.deepEqual(messages.map(item => item.content), [
+      "تم تسجيل بياناتك بنجاح ✅",
+      "قيّم خدمتنا ومع الموظف (Mona) من 1 إلى 5"
+    ]);
+    assert.equal(customAttributesBody.custom_attributes.resolve_survey_state, "awaiting_rating");
+    assert.equal(customAttributesBody.custom_attributes.resolve_survey_agent_id, "7");
+    assert.equal(customAttributesBody.custom_attributes.resolve_survey_agent_name, "Mona");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleResolveSurveyWebhook stores the customer's rating reply and thanks them", async () => {
+  let customAttributesBody = null;
+  const messages = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 25,
+        custom_attributes: {
+          resolve_survey_state: "awaiting_rating",
+          resolve_survey_agent_id: "7",
+          resolve_survey_agent_name: "Mona"
+        },
+        meta: { sender: { id: 10, name: "Customer" }, assignee: null }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 810 }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    // Customer replies "٥" (Arabic-Indic 5).
+    const result = await handleResolveSurveyWebhook(leadSourcePayload("٥"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      thanksText: "شكرًا لتقييمك ({rating}/{max})",
+      audit: false
+    });
+
+    assert.equal(result.action, "resolve_survey_rated");
+    assert.equal(result.rating, 5);
+    assert.equal(result.agentId, "7");
+    assert.equal(result.agentName, "Mona");
+    assert.equal(customAttributesBody.custom_attributes.csat_rating, 5);
+    assert.equal(customAttributesBody.custom_attributes.resolve_survey_rating, 5);
+    assert.equal(customAttributesBody.custom_attributes.resolve_survey_state, "rated");
+    assert.equal(customAttributesBody.custom_attributes.resolve_survey_agent_id, "7");
+    assert.deepEqual(messages.map(item => item.content), ["شكرًا لتقييمك (5/5)"]);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleResolveSurveyWebhook releases a non-rating reply back to the normal flow", async () => {
+  let wrote = false;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 25,
+        custom_attributes: { resolve_survey_state: "awaiting_rating" },
+        meta: { sender: { id: 10, name: "Customer" }, assignee: null }
+      }));
+      return;
+    }
+
+    if (req.method !== "GET") wrote = true;
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleResolveSurveyWebhook(leadSourcePayload("عايز أستفسر عن كورس تاني"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      audit: false
+    });
+
+    assert.equal(result.handled, false);
+    assert.equal(result.reason, "resolve_survey_reply_not_rating");
+    assert.equal(wrote, false);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleResolveSurveyWebhook does not re-survey a conversation that was already asked", async () => {
+  let wrote = false;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "resolved",
+        inbox_id: 25,
+        custom_attributes: { resolve_survey_state: "awaiting_rating" },
+        meta: { sender: { id: 10, name: "Customer" }, assignee: { id: 7, name: "Mona" } }
+      }));
+      return;
+    }
+
+    if (req.method !== "GET") wrote = true;
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleResolveSurveyWebhook(resolveStatusPayload("resolved"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      audit: false
+    });
+
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "resolve_survey_already_sent");
+    assert.equal(wrote, false);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -3803,6 +4010,16 @@ function leadSourcePayload(content = "hello", overrides = {}) {
     },
     sender: { id: 10, name: "Customer", ...(overrides.sender || {}) },
     ...overrides.payload
+  };
+}
+
+function resolveStatusPayload(status = "resolved", overrides = {}) {
+  return {
+    event: "conversation_status_changed",
+    id: 33,
+    status,
+    inbox_id: 25,
+    ...overrides
   };
 }
 
