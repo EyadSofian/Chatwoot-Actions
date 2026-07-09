@@ -239,6 +239,8 @@ All texts support `\n` for line breaks. Placeholders: `{min}`/`{max}` (scale bou
 
 ## Analytics
 
+> **Standalone reports view:** open `/?view=reports` for a clean, managers-only dashboard that shows just the **Analytics**, **Campaign Analytics**, and **Email Digest** tabs (no operations tabs). It loads full-screen from the app's own URL and uses the server-side Chatwoot connection, so it does not need to be embedded inside Chatwoot. Share that link (behind `OPS_PASSWORD`) with people who only need reports.
+
 The **Analytics** tab (and the `POST /api/reports/analytics` endpoint) combines two data sources into one report:
 
 - **Lead sources and CSAT ratings** come from a durable local fact log. Every lead source collected and every rating captured is appended to `DATA_DIR/metrics.json` the moment it happens, so history survives redeploys and the capped webhook buffer. Each fact carries a `dedupeKey` (one rating per conversation, one source per contact) so a replayed webhook never double-counts. Attach a **Railway Volume** (`DATA_DIR`) to keep it.
