@@ -263,6 +263,10 @@ export class ChatwootClient {
     return this.request(this.reportPath("/reports"), { query });
   }
 
+  reportsSummary(query = {}) {
+    return this.request(this.reportPath("/reports/summary"), { query });
+  }
+
   reportingEvents(query = {}) {
     return this.request(this.accountPath("/reporting_events"), { query });
   }

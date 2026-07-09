@@ -21,6 +21,7 @@ import {
   buildPhoneAssignPreview,
   executeBulkAction,
   executePhoneAssign,
+  getAnalyticsReport,
   getOpenConversationReport,
   getReportsSummary,
   handleAgentAssignmentLabelDrop,
@@ -227,6 +228,11 @@ async function route(req, res) {
   if (req.method === "POST" && url.pathname === "/api/reports/summary") {
     const body = await readJsonBody(req);
     return sendJson(res, 200, await getReportsSummary(body.connection, body.query));
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/reports/analytics") {
+    const body = await readJsonBody(req);
+    return sendJson(res, 200, await getAnalyticsReport(body.connection, body.filters || body.criteria || {}));
   }
 
   if (req.method === "POST" && url.pathname === "/api/conversations/open-report") {

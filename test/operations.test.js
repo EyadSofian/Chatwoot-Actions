@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import {
+  aggregateAnalytics,
   buildPhoneAssignPreview,
   evaluateCustomerTimeout,
   extractPhoneNumbers,
@@ -4866,4 +4867,63 @@ test("handleResolvedReentryReset stamps the durable resolve marker, preserving e
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
+});
+
+const analyticsEvents = [
+  { type: "csat", inboxId: "10", agentId: "1", agentName: "Sara", rating: 5, at: "2026-06-01T10:00:00.000Z" },
+  { type: "csat", inboxId: "10", agentId: "1", agentName: "Sara", rating: 3, at: "2026-06-02T10:00:00.000Z" },
+  { type: "csat", inboxId: "10", agentId: "2", agentName: "Omar", rating: 4, at: "2026-06-03T10:00:00.000Z" },
+  { type: "csat", inboxId: "20", agentId: "2", agentName: "Omar", rating: 1, at: "2026-06-04T10:00:00.000Z" },
+  { type: "lead_source", inboxId: "10", value: "facebook", label: "Facebook", at: "2026-06-01T10:00:00.000Z" },
+  { type: "lead_source", inboxId: "10", value: "facebook", label: "Facebook", at: "2026-06-02T10:00:00.000Z" },
+  { type: "lead_source", inboxId: "10", value: "instagram", label: "Instagram", at: "2026-06-03T10:00:00.000Z" },
+  { type: "lead_source", inboxId: "20", value: "google", label: "Google", at: "2026-06-04T10:00:00.000Z" }
+];
+
+test("aggregateAnalytics summarises CSAT ratings, per-agent averages, and lead sources", () => {
+  const result = aggregateAnalytics(analyticsEvents, {});
+
+  assert.equal(result.csat.ratedCount, 4);
+  assert.equal(result.csat.averageRating, 3.25);
+  assert.deepEqual(result.csat.distribution, { 1: 1, 3: 1, 4: 1, 5: 1 });
+
+  const sara = result.csat.perAgent.find(agent => agent.agentName === "Sara");
+  const omar = result.csat.perAgent.find(agent => agent.agentName === "Omar");
+  assert.equal(sara.ratedCount, 2);
+  assert.equal(sara.averageRating, 4);
+  assert.equal(omar.ratedCount, 2);
+  assert.equal(omar.averageRating, 2.5);
+
+  assert.equal(result.leadSources.total, 4);
+  const facebook = result.leadSources.bySource.find(source => source.value === "facebook");
+  assert.equal(facebook.count, 2);
+  assert.equal(facebook.percentage, 50);
+  assert.equal(result.leadSources.bySource[0].value, "facebook", "most common source is first");
+});
+
+test("aggregateAnalytics scopes to a single inbox", () => {
+  const result = aggregateAnalytics(analyticsEvents, { inboxId: "10" });
+  assert.equal(result.csat.ratedCount, 3);
+  assert.equal(result.csat.averageRating, 4);
+  assert.equal(result.leadSources.total, 3);
+  assert.ok(!result.leadSources.bySource.some(source => source.value === "google"), "inbox 20 lead excluded");
+});
+
+test("aggregateAnalytics filters by an inclusive date window", () => {
+  const result = aggregateAnalytics(analyticsEvents, {
+    sinceMs: Date.parse("2026-06-02T00:00:00.000Z"),
+    untilMs: Date.parse("2026-06-03T23:59:59.999Z")
+  });
+  assert.equal(result.csat.ratedCount, 2);
+  assert.equal(result.csat.averageRating, 3.5);
+  assert.equal(result.leadSources.total, 2);
+});
+
+test("aggregateAnalytics returns empty shape for no events", () => {
+  const result = aggregateAnalytics([], {});
+  assert.equal(result.csat.ratedCount, 0);
+  assert.equal(result.csat.averageRating, null);
+  assert.deepEqual(result.csat.perAgent, []);
+  assert.equal(result.leadSources.total, 0);
+  assert.deepEqual(result.leadSources.bySource, []);
 });
