@@ -1,6 +1,6 @@
 import { ChatwootClient, buildFilterPayload, getMeta, getPayload } from "./chatwootClient.js";
 import { automationSettingsToRouterOptions } from "./automationSettings.js";
-import { appendAudit, getDepartmentRoute, readAutomationSettings, saveDepartmentRoute, saveJob } from "./store.js";
+import { appendAudit, appendMetricEvent, getDepartmentRoute, readAutomationSettings, readMetricEvents, saveDepartmentRoute, saveJob } from "./store.js";
 
 const DEFAULT_STATUSES = ["open", "pending", "resolved", "snoozed"];
 const REOPEN_ROUTER_DEFAULT_UNAVAILABLE = ["offline", "busy", "away", "unavailable", "missing"];
@@ -294,6 +294,230 @@ export async function getReportsSummary(connection, query = {}) {
   }
 
   return { since, until, reports, conversationMetrics };
+}
+
+// --- Analytics: durable CSAT + lead-source facts merged with live Chatwoot timings ---
+
+// Best-effort durable fact log. Analytics is a reporting side-channel, so a metrics
+// write must never break the webhook acknowledgement path.
+async function recordMetricEvent(event) {
+  try {
+    return await appendMetricEvent(event);
+  } catch (error) {
+    console.log("metric record error:", error.message);
+    return null;
+  }
+}
+
+// Pure aggregation over the durable fact log so it can be unit-tested and reused by a
+// future scheduled email digest. `sinceMs`/`untilMs` are epoch milliseconds (or null
+// for open-ended); `inboxId` optionally scopes the report to a single inbox.
+export function aggregateAnalytics(events = [], { sinceMs = null, untilMs = null, inboxId = "" } = {}) {
+  const wantedInbox = inboxId ? String(inboxId) : "";
+  const inWindow = (events || []).filter(event => {
+    if (wantedInbox && String(event?.inboxId || "") !== wantedInbox) return false;
+    const atMs = toEpochMs(event?.at || event?.recordedAt);
+    if (atMs == null) return false;
+    if (sinceMs != null && atMs < sinceMs) return false;
+    if (untilMs != null && atMs > untilMs) return false;
+    return true;
+  });
+
+  const csatEvents = inWindow.filter(event => event.type === "csat");
+  const leadEvents = inWindow.filter(event => event.type === "lead_source");
+
+  const distribution = {};
+  let ratingSum = 0;
+  const perAgent = new Map();
+  for (const event of csatEvents) {
+    const rating = Number(event.rating);
+    if (!Number.isFinite(rating)) continue;
+    distribution[rating] = (distribution[rating] || 0) + 1;
+    ratingSum += rating;
+    const key = String(event.agentId || event.agentName || "unassigned");
+    const agent = perAgent.get(key) || { agentId: String(event.agentId || ""), agentName: event.agentName || "", ratedCount: 0, ratingSum: 0 };
+    agent.ratedCount += 1;
+    agent.ratingSum += rating;
+    if (!agent.agentName && event.agentName) agent.agentName = event.agentName;
+    perAgent.set(key, agent);
+  }
+  const ratedCount = csatEvents.filter(event => Number.isFinite(Number(event.rating))).length;
+
+  const bySource = new Map();
+  for (const event of leadEvents) {
+    const key = String(event.value || event.label || "unknown");
+    const source = bySource.get(key) || { value: event.value || key, label: event.label || event.value || key, count: 0 };
+    source.count += 1;
+    if (!source.label && event.label) source.label = event.label;
+    bySource.set(key, source);
+  }
+  const leadTotal = leadEvents.length;
+
+  return {
+    csat: {
+      ratedCount,
+      averageRating: ratedCount ? round(ratingSum / ratedCount, 2) : null,
+      distribution,
+      perAgent: [...perAgent.values()]
+        .map(agent => ({
+          agentId: agent.agentId,
+          agentName: agent.agentName,
+          ratedCount: agent.ratedCount,
+          averageRating: agent.ratedCount ? round(agent.ratingSum / agent.ratedCount, 2) : null
+        }))
+        .sort((a, b) => b.ratedCount - a.ratedCount || String(a.agentName).localeCompare(String(b.agentName)))
+    },
+    leadSources: {
+      total: leadTotal,
+      bySource: [...bySource.values()]
+        .map(source => ({
+          value: source.value,
+          label: source.label,
+          count: source.count,
+          percentage: leadTotal ? round((source.count / leadTotal) * 100, 1) : 0
+        }))
+        .sort((a, b) => b.count - a.count || String(a.label).localeCompare(String(b.label)))
+    }
+  };
+}
+
+// Full analytics report: local facts (CSAT + lead sources) merged with live Chatwoot
+// per-agent / per-team response & resolution timings. Best-effort — if Chatwoot
+// reporting is unavailable the local parts still render, with a warning attached.
+export async function getAnalyticsReport(connection, filters = {}) {
+  const warnings = [];
+  const nowMs = Date.now();
+  const sinceMs = filters.since != null && filters.since !== "" ? toEpochMs(filters.since) : nowMs - 30 * 24 * 60 * 60 * 1000;
+  const untilMs = filters.until != null && filters.until !== "" ? toEpochMsInclusive(filters.until) : nowMs;
+  const inboxId = filters.inboxId ? String(filters.inboxId) : "";
+
+  let events = [];
+  try {
+    events = await readMetricEvents();
+  } catch (error) {
+    warnings.push(`Could not read local analytics store: ${error.message}`);
+  }
+  const local = aggregateAnalytics(events, { sinceMs, untilMs, inboxId });
+
+  const sinceSec = Math.floor((sinceMs ?? nowMs) / 1000);
+  const untilSec = Math.floor((untilMs ?? nowMs) / 1000);
+  const csatByAgent = new Map(local.csat.perAgent.filter(agent => agent.agentId).map(agent => [String(agent.agentId), agent]));
+
+  let agents = [];
+  let teams = [];
+  try {
+    const client = makeClient(connection);
+    const [agentsResult, teamsResult] = await Promise.allSettled([client.listAgents(), client.listTeams()]);
+    const agentRows = agentsResult.status === "fulfilled" ? normalizeRows(agentsResult.value) : [];
+    const teamRows = teamsResult.status === "fulfilled" ? normalizeRows(teamsResult.value) : [];
+    if (agentsResult.status === "rejected") warnings.push(`Could not load agents: ${agentsResult.reason.message}`);
+    if (teamsResult.status === "rejected") warnings.push(`Could not load teams: ${teamsResult.reason.message}`);
+
+    agents = await mapLimit(agentRows, 4, async agent => {
+      const perf = await fetchSummaryPerf(client, { type: "agent", id: agent.id, since: sinceSec, until: untilSec }, warnings);
+      const csat = csatByAgent.get(String(agent.id));
+      return {
+        agentId: String(agent.id),
+        agentName: agent.name || `Agent ${agent.id}`,
+        ...perf,
+        ratedCount: csat?.ratedCount || 0,
+        averageRating: csat?.averageRating ?? null
+      };
+    });
+    teams = await mapLimit(teamRows, 4, async team => {
+      const perf = await fetchSummaryPerf(client, { type: "team", id: team.id, since: sinceSec, until: untilSec }, warnings);
+      return { teamId: String(team.id), teamName: team.name || `Team ${team.id}`, ...perf };
+    });
+  } catch (error) {
+    warnings.push(`Chatwoot reporting unavailable: ${error.message}`);
+  }
+
+  // Surface CSAT for agents Chatwoot did not return (e.g. deactivated) so no rating is lost.
+  const seenAgents = new Set(agents.map(agent => String(agent.agentId)));
+  for (const csat of local.csat.perAgent) {
+    if (csat.agentId && !seenAgents.has(String(csat.agentId))) {
+      agents.push({
+        agentId: String(csat.agentId),
+        agentName: csat.agentName || `Agent ${csat.agentId}`,
+        conversationsCount: null,
+        resolutionsCount: null,
+        avgFirstResponseTime: null,
+        avgResolutionTime: null,
+        ratedCount: csat.ratedCount,
+        averageRating: csat.averageRating
+      });
+    }
+  }
+  agents.sort((a, b) => (b.ratedCount || 0) - (a.ratedCount || 0) || String(a.agentName).localeCompare(String(b.agentName)));
+
+  return {
+    generatedAt: new Date().toISOString(),
+    window: { since: new Date(sinceMs).toISOString(), until: new Date(untilMs).toISOString(), inboxId: inboxId || null },
+    csat: local.csat,
+    leadSources: local.leadSources,
+    agents,
+    teams,
+    warnings
+  };
+}
+
+async function fetchSummaryPerf(client, query, warnings) {
+  try {
+    const summary = await client.reportsSummary(query);
+    const row = Array.isArray(summary) ? summary[0] : summary;
+    return {
+      conversationsCount: pickNumber(row, ["conversations_count", "conversationsCount"]),
+      resolutionsCount: pickNumber(row, ["resolutions_count", "resolutionsCount"]),
+      avgFirstResponseTime: pickNumber(row, ["avg_first_response_time", "avgFirstResponseTime"]),
+      avgResolutionTime: pickNumber(row, ["avg_resolution_time", "avgResolutionTime"])
+    };
+  } catch (error) {
+    warnings.push(`Chatwoot ${query.type} report unavailable for ${query.id}: ${error.message}`);
+    return { conversationsCount: null, resolutionsCount: null, avgFirstResponseTime: null, avgResolutionTime: null };
+  }
+}
+
+function pickNumber(row, keys) {
+  if (!row || typeof row !== "object") return null;
+  for (const key of keys) {
+    if (row[key] != null && row[key] !== "") {
+      const num = Number(row[key]);
+      if (Number.isFinite(num)) return num;
+    }
+  }
+  return null;
+}
+
+function toEpochMs(value) {
+  if (value == null || value === "") return null;
+  if (typeof value === "number") return value < 1e12 ? value * 1000 : value;
+  const text = String(value).trim();
+  if (/^\d+$/.test(text)) {
+    const num = Number(text);
+    return num < 1e12 ? num * 1000 : num;
+  }
+  const ms = Date.parse(text);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+// Inclusive upper bound: a bare epoch-second or plain YYYY-MM-DD date should include the
+// events that happened during that final second / day, so extend the bound to its end.
+function toEpochMsInclusive(value) {
+  const text = String(value).trim();
+  if (typeof value === "number" || /^\d+$/.test(text)) {
+    const num = Number(value);
+    return num < 1e12 ? num * 1000 + 999 : num;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const ms = Date.parse(`${text}T23:59:59.999Z`);
+    return Number.isNaN(ms) ? null : ms;
+  }
+  return toEpochMs(value);
+}
+
+function round(value, digits) {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
 }
 
 export async function getOpenConversationReport(connection, criteria = {}) {
@@ -704,6 +928,18 @@ export async function handleLeadSourceRouterWebhook(payload = {}, options = {}) 
         labelErrors: saved.labelErrors,
         confirmationMessageId
       }, config.audit);
+      // Durable analytics fact: one lead source per contact (dedupeKey keeps a repeat
+      // answer from double-counting). Powers the lead-source breakdown in Analytics.
+      await recordMetricEvent({
+        type: "lead_source",
+        conversationId: String(conversationId),
+        inboxId: inboxId != null ? String(inboxId) : "",
+        contactId: contactId ? String(contactId) : "",
+        value: choice.value,
+        label: choice.label,
+        at: new Date().toISOString(),
+        dedupeKey: `lead_source:${contactId}`
+      });
       return {
         ok: true,
         handled: true,
@@ -935,6 +1171,19 @@ async function captureResolveSurveyRating(client, conversation, config, rating, 
   await auditDepartmentRouter("resolve_survey_rated", {
     conversationId, inboxId, rating, agentId: agentId || null, agentName, thanksMessageId
   }, config.audit);
+  // Durable analytics fact: one rating per conversation (dedupeKey keeps a replayed
+  // webhook from double-counting). Powers CSAT and per-agent satisfaction in Analytics.
+  await recordMetricEvent({
+    type: "csat",
+    conversationId: String(conversationId),
+    inboxId: inboxId != null ? String(inboxId) : "",
+    agentId: agentId ? String(agentId) : "",
+    agentName,
+    rating,
+    maxRating: config.maxRating,
+    at: now,
+    dedupeKey: `csat:${conversationId}`
+  });
   return {
     ok: true,
     handled: true,

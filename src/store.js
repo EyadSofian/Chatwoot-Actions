@@ -11,8 +11,11 @@ const files = {
   webhooks: join(dataDir, "webhook-events.json"),
   campaigns: join(dataDir, "campaigns.json"),
   departmentRoutes: join(dataDir, "department-routes.json"),
-  automationSettings: join(dataDir, "automation-settings.json")
+  automationSettings: join(dataDir, "automation-settings.json"),
+  metrics: join(dataDir, "metrics.json")
 };
+
+const METRICS_STORE_LIMIT = Math.max(1000, Number(process.env.METRICS_STORE_LIMIT) || 50000);
 
 export async function readCollection(name) {
   await ensureDataDir();
@@ -94,6 +97,29 @@ export async function appendWebhookEvent(event) {
   webhooks.unshift(row);
   await writeCollection("webhooks", webhooks.slice(0, 2000));
   return row;
+}
+
+// Durable analytics fact log. Every CSAT rating and every lead-source answer is
+// appended here the moment it happens, so reporting history survives redeploys and the
+// capped webhook buffer. Deduped by an optional dedupeKey so a replayed webhook never
+// double-counts. Attach a Railway Volume (DATA_DIR) to persist it across deploys.
+export async function appendMetricEvent(event) {
+  const metrics = await readCollection("metrics");
+  if (event?.dedupeKey && metrics.some(item => item.dedupeKey === event.dedupeKey)) {
+    return null;
+  }
+  const row = {
+    id: createId("mtr"),
+    recordedAt: new Date().toISOString(),
+    ...event
+  };
+  metrics.unshift(row);
+  await writeCollection("metrics", metrics.slice(0, METRICS_STORE_LIMIT));
+  return row;
+}
+
+export async function readMetricEvents() {
+  return readCollection("metrics");
 }
 
 export async function getDepartmentRoute(conversationId) {

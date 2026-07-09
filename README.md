@@ -237,6 +237,22 @@ LEAD_SOURCE_ROUTER_ENABLED=false
 
 All texts support `\n` for line breaks. Placeholders: `{min}`/`{max}` (scale bounds), `{agent}` in the rating text (expands to `RESOLVE_SURVEY_AGENT_TEMPLATE` with the agent name, or nothing when the conversation was unassigned), and `{rating}`/`{max}` in the thanks text. Set `RESOLVE_SURVEY_ACK_TEXT=` or `RESOLVE_SURVEY_THANKS_TEXT=` (empty) to skip either message. Use a **dedicated inbox** for the survey — one that is not also a Fahd/Botpress bot inbox — so the rating reply is captured by the survey and not forwarded to the bot.
 
+## Analytics
+
+The **Analytics** tab (and the `POST /api/reports/analytics` endpoint) combines two data sources into one report:
+
+- **Lead sources and CSAT ratings** come from a durable local fact log. Every lead source collected and every rating captured is appended to `DATA_DIR/metrics.json` the moment it happens, so history survives redeploys and the capped webhook buffer. Each fact carries a `dedupeKey` (one rating per conversation, one source per contact) so a replayed webhook never double-counts. Attach a **Railway Volume** (`DATA_DIR`) to keep it.
+- **Agent and team response / resolution times** come live from Chatwoot's own reporting API (`/reports/summary`), best-effort. If Chatwoot reporting is unavailable the lead-source and CSAT parts still render, with a warning.
+
+The report answers: how many customers were surveyed, the average rating and its distribution, how many leads came from each source (deduped per contact, with percentages), customer satisfaction per agent, and per-agent / per-team conversation counts with average first-response and resolution times. Filter by date range and inbox, and download the whole thing as CSV.
+
+The report object is built by the pure `aggregateAnalytics()` helper (CSAT + lead sources) wrapped by `getAnalyticsReport()` (which adds the live Chatwoot merge), so it can be reused later for a scheduled email digest — that part is not wired yet, and no email configuration is required today.
+
+```text
+# Optional: raise the durable fact-log cap (default 50000 records)
+METRICS_STORE_LIMIT=50000
+```
+
 ## Department Router
 
 The Department Router implements the trainee WhatsApp flow from the operations playbook. It asks customers to choose Sales, Trainee Support, or Complaints, then routes only inside the configured Chatwoot teams/inbox.

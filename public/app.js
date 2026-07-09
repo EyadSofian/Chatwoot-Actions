@@ -11,6 +11,8 @@ const state = {
   phoneParse: null,
   loadingAction: "",
   openReport: null,
+  analytics: null,
+  analyticsFilters: { since: "", until: "", inboxId: "" },
   jobs: [],
   audit: [],
   campaigns: [],
@@ -51,6 +53,33 @@ const translations = {
   ar: {
     "Actions": "الإجراءات",
     "Dashboard": "لوحة المتابعة",
+    "Analytics": "التحليلات",
+    "Lead sources, CSAT, and per-agent / per-team response times.": "مصادر العملاء والتقييمات وأزمنة رد كل موظف/تيم.",
+    "Lead sources and satisfaction come from this app's durable log; agent and team timings come live from Chatwoot reporting.": "مصادر العملاء والتقييمات بتتسجل في سجل دائم جوه التطبيق؛ وأزمنة رد الموظفين والتيمات بتيجي مباشرة من تقارير Chatwoot.",
+    "From date": "من تاريخ",
+    "To date": "إلى تاريخ",
+    "Leave the dates empty to report on the last 30 days.": "سيب التواريخ فاضية عشان التقرير يشمل آخر 30 يوم.",
+    "Run analytics": "شغّل التحليلات",
+    "Download analytics CSV": "تحميل التحليلات CSV",
+    "No analytics to download.": "لا يوجد تحليلات للتحميل.",
+    "Analytics CSV downloaded.": "تم تحميل ملف التحليلات CSV.",
+    "Customers surveyed": "عملاء قيّموا",
+    "Average rating": "متوسط التقييم",
+    "Total leads": "إجمالي العملاء",
+    "Rating distribution": "توزيع التقييمات",
+    "Leads by source": "العملاء حسب المصدر",
+    "Per-agent satisfaction & response": "رضا واستجابة كل موظف",
+    "Per-team performance": "أداء كل تيم",
+    "rating": "التقييم",
+    "count": "العدد",
+    "share": "النسبة",
+    "teamName": "التيم",
+    "ratedCount": "عدد التقييمات",
+    "averageRating": "متوسط التقييم",
+    "conversationsCount": "عدد المحادثات",
+    "resolutionsCount": "عدد الحلول",
+    "avgFirstResponseTime": "متوسط أول رد",
+    "avgResolutionTime": "متوسط زمن الحل",
     "Open Report": "تقرير المفتوح",
     "Phone Assign": "تعيين بالأرقام",
     "Campaigns": "الحملات",
@@ -416,6 +445,7 @@ const tabs = [
   ["open_report", "Open Report"],
   ["phone_assign", "Phone Assign"],
   ["dashboard", "Dashboard"],
+  ["analytics", "Analytics"],
   ["campaigns", "Campaigns"],
   ["audit", "Logs"],
   ["exports", "Exports"],
@@ -428,6 +458,7 @@ const titles = {
   open_report: ["Open Report", "Open conversations by inbox, unassigned queue, and selected agents."],
   phone_assign: ["Phone Assign", "Assign open conversations by uploaded or pasted phone numbers."],
   dashboard: ["Dashboard", "Counters, report snapshots, and Chatwoot embedded context."],
+  analytics: ["Analytics", "Lead sources, CSAT, and per-agent / per-team response times."],
   campaigns: ["Campaigns", "Track local campaigns and Chatwoot webhook reply signals."],
   audit: ["Logs", "Who did what, when, and which bulk job changed it."],
   exports: ["Exports", "Download CSV files for audit logs, campaigns, and bulk jobs."],
@@ -505,6 +536,7 @@ function render() {
   if (state.tab === "open_report") view.innerHTML = openReportView();
   if (state.tab === "phone_assign") view.innerHTML = phoneAssignView();
   if (state.tab === "dashboard") view.innerHTML = dashboardView();
+  if (state.tab === "analytics") view.innerHTML = analyticsView();
   if (state.tab === "campaigns") view.innerHTML = campaignsView();
   if (state.tab === "audit") view.innerHTML = auditView();
   if (state.tab === "exports") view.innerHTML = exportsView();
@@ -1174,6 +1206,8 @@ async function runAction(action) {
   if (action === "preview-phone-assign") return previewPhoneAssign();
   if (action === "execute-phone-assign") return executePhoneAssign();
   if (action === "load-reports") return loadReports();
+  if (action === "load-analytics") return loadAnalytics();
+  if (action === "export-analytics") return exportAnalytics();
   if (action === "load-audit") return loadAudit();
   if (action === "fetch-chatwoot-audit") return fetchChatwootAudit();
   if (action === "create-campaign") return createCampaign();
@@ -1288,6 +1322,7 @@ async function refreshActiveTab() {
   if (state.tab === "open_report") return loadOpenReport();
   if (state.tab === "automation") return loadAutomationSettings();
   if (state.tab === "dashboard") return loadReports();
+  if (state.tab === "analytics") return loadAnalytics();
   if (state.tab === "audit") return loadAudit();
   if (state.tab === "campaigns") return Promise.all([loadCampaigns(), loadWebhooks()]);
   if (state.tab === "exports") return loadJobs();
@@ -1366,6 +1401,158 @@ function openReportExportRows(report) {
     lastSalesReplyBy: row.lastSalesReplyBy || "",
     source: row.source
   }));
+}
+
+function analyticsView() {
+  const report = state.analytics;
+  const csat = report?.csat || {};
+  const leads = report?.leadSources || {};
+  const filters = state.analyticsFilters || {};
+  const warnings = (report?.warnings || []).map(item => `<p class="notice warn">${escapeHtml(item)}</p>`).join("");
+  const distribution = csat.distribution || {};
+  const distRows = Object.keys(distribution)
+    .sort((a, b) => Number(a) - Number(b))
+    .map(rating => ({ rating, count: distribution[rating] }));
+  const sourceRows = (leads.bySource || []).map(row => ({
+    source: row.label,
+    count: row.count,
+    share: `${row.percentage}%`
+  }));
+  const agentRows = (report?.agents || []).map(row => ({
+    agentName: row.agentName,
+    ratedCount: row.ratedCount ?? 0,
+    averageRating: row.averageRating ?? "-",
+    conversationsCount: row.conversationsCount ?? "-",
+    resolutionsCount: row.resolutionsCount ?? "-",
+    avgFirstResponseTime: formatDuration(row.avgFirstResponseTime),
+    avgResolutionTime: formatDuration(row.avgResolutionTime)
+  }));
+  const teamRows = (report?.teams || []).map(row => ({
+    teamName: row.teamName,
+    conversationsCount: row.conversationsCount ?? "-",
+    resolutionsCount: row.resolutionsCount ?? "-",
+    avgFirstResponseTime: formatDuration(row.avgFirstResponseTime),
+    avgResolutionTime: formatDuration(row.avgResolutionTime)
+  }));
+
+  return `
+    ${embeddedBanner()}
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>${tr("Analytics")}</h2>
+          <p class="panel-note">${tr("Lead sources and satisfaction come from this app's durable log; agent and team timings come live from Chatwoot reporting.")}</p>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+          ${inputField("analyticsSince", "From date", filters.since || "", "date")}
+          ${inputField("analyticsUntil", "To date", filters.until || "", "date")}
+          ${inboxSelect("analyticsInboxId", "Inbox", filters.inboxId || "")}
+        </div>
+        <p class="notice">${tr("Leave the dates empty to report on the last 30 days.")}</p>
+        <div class="actions">
+          <button class="button" data-action="load-analytics">${tr("Run analytics")}</button>
+          <button class="button secondary" data-action="export-analytics" ${report ? "" : "disabled"}>${tr("Download analytics CSV")}</button>
+        </div>
+      </div>
+    </section>
+    ${warnings}
+    <div class="grid three" style="margin-top:16px">
+      ${stat("Customers surveyed", csat.ratedCount ?? "-")}
+      ${stat("Average rating", csat.averageRating ?? "-")}
+      ${stat("Total leads", leads.total ?? "-")}
+    </div>
+    <div class="grid two" style="margin-top:16px">
+      <section class="panel">
+        <div class="panel-header"><h2>${tr("Rating distribution")}</h2></div>
+        <div class="panel-body">${simpleTable(distRows, ["rating", "count"])}</div>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><h2>${tr("Leads by source")}</h2></div>
+        <div class="panel-body">${simpleTable(sourceRows, ["source", "count", "share"])}</div>
+      </section>
+    </div>
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>${tr("Per-agent satisfaction & response")}</h2></div>
+      <div class="panel-body">${simpleTable(agentRows, ["agentName", "ratedCount", "averageRating", "conversationsCount", "resolutionsCount", "avgFirstResponseTime", "avgResolutionTime"])}</div>
+    </section>
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>${tr("Per-team performance")}</h2></div>
+      <div class="panel-body">${simpleTable(teamRows, ["teamName", "conversationsCount", "resolutionsCount", "avgFirstResponseTime", "avgResolutionTime"])}</div>
+    </section>
+  `;
+}
+
+async function loadAnalytics() {
+  if (!hasConnection()) return notify(tr("Save Chatwoot connection first."), "warn");
+  const filters = {
+    since: value("analyticsSince") || "",
+    until: value("analyticsUntil") || "",
+    inboxId: value("analyticsInboxId") || ""
+  };
+  state.analyticsFilters = { ...filters };
+  state.analytics = await api("/api/reports/analytics", { connection: state.connection, filters });
+  render();
+}
+
+function exportAnalytics() {
+  if (!state.analytics) return notify(tr("No analytics to download."), "warn");
+  const rows = analyticsExportRows(state.analytics);
+  const fileName = `chatwoot-analytics-${new Date().toISOString().slice(0, 10)}.csv`;
+  downloadCsv(fileName, rows);
+  notify(tr("Analytics CSV downloaded."), "ok");
+}
+
+function analyticsExportRows(report) {
+  const rows = [];
+  for (const source of report.leadSources?.bySource || []) {
+    rows.push({ section: "lead_source", name: source.label, value: source.value, count: source.count, percentage: source.percentage });
+  }
+  const distribution = report.csat?.distribution || {};
+  for (const rating of Object.keys(distribution).sort((a, b) => Number(a) - Number(b))) {
+    rows.push({ section: "csat_rating", name: rating, count: distribution[rating] });
+  }
+  for (const agent of report.agents || []) {
+    rows.push({
+      section: "agent",
+      name: agent.agentName,
+      id: agent.agentId,
+      ratedCount: agent.ratedCount ?? 0,
+      averageRating: agent.averageRating ?? "",
+      conversationsCount: agent.conversationsCount ?? "",
+      resolutionsCount: agent.resolutionsCount ?? "",
+      avgFirstResponseTimeSeconds: agent.avgFirstResponseTime ?? "",
+      avgResolutionTimeSeconds: agent.avgResolutionTime ?? ""
+    });
+  }
+  for (const team of report.teams || []) {
+    rows.push({
+      section: "team",
+      name: team.teamName,
+      id: team.teamId,
+      conversationsCount: team.conversationsCount ?? "",
+      resolutionsCount: team.resolutionsCount ?? "",
+      avgFirstResponseTimeSeconds: team.avgFirstResponseTime ?? "",
+      avgResolutionTimeSeconds: team.avgResolutionTime ?? ""
+    });
+  }
+  return rows;
+}
+
+function formatDuration(seconds) {
+  if (seconds == null || seconds === "" || Number.isNaN(Number(seconds))) return "-";
+  let remaining = Math.round(Number(seconds));
+  if (remaining <= 0) return "0s";
+  const hours = Math.floor(remaining / 3600);
+  remaining -= hours * 3600;
+  const minutes = Math.floor(remaining / 60);
+  remaining -= minutes * 60;
+  const parts = [];
+  if (hours) parts.push(`${hours}h`);
+  if (minutes) parts.push(`${minutes}m`);
+  if (remaining || parts.length === 0) parts.push(`${remaining}s`);
+  return parts.join(" ");
 }
 
 async function handlePhoneFile(file) {
