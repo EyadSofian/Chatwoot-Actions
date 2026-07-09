@@ -100,10 +100,12 @@ export function buildZohoTransport(env = process.env) {
     throw new Error("Zoho SMTP is not configured. Set ZOHO_SMTP_USER and ZOHO_SMTP_PASS.");
   }
   const port = Number(env.ZOHO_SMTP_PORT || env.SMTP_PORT || 465);
+  const secure = port === 465;
   return nodemailer.createTransport({
     host: env.ZOHO_SMTP_HOST || env.SMTP_HOST || "smtp.zoho.com",
     port,
-    secure: port === 465,
+    secure,               // 465 = implicit TLS; 587 = STARTTLS (secure:false + requireTLS)
+    requireTLS: !secure,
     auth: { user, pass }
   });
 }

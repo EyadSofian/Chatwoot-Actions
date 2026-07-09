@@ -260,8 +260,10 @@ The **Campaign Analytics** tab (and `POST /api/reports/campaigns`) reads broadca
 Only `send` jobs are treated as campaigns (`upload` jobs are contact imports). Set the uploader's public URL either in the tab or on the server:
 
 ```text
-CAMPAIGN_UPLOADER_URL=https://your-uploader.up.railway.app
-# Optional, only if the uploader's /api/jobs is protected:
+# One URL, or several comma-separated (they are fetched and merged, each campaign
+# tagged with its source host):
+CAMPAIGN_UPLOADER_URL=https://uploader-a.up.railway.app,https://uploader-b.up.railway.app
+# Optional, only if the uploaders' /api/jobs is protected:
 CAMPAIGN_UPLOADER_TOKEN=your-secret
 ```
 

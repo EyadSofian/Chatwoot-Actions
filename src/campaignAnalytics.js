@@ -54,6 +54,7 @@ export function aggregateCampaignJobs(jobs = [], { inboxLookup = new Map() } = {
       total: Number(job.total || 0),
       failed: Number(job.counters?.failed || 0) + Number(job.counters?.errors || 0),
       operatorName: String(job.operatorName || settings.operatorName || ""),
+      source: String(job._source || job.source || ""),
       createdAt: job.createdAt || ""
     });
   }
@@ -74,20 +75,24 @@ export function aggregateCampaignJobs(jobs = [], { inboxLookup = new Map() } = {
 // degrades to whatever it could load, with warnings, so the dashboard never hard-fails.
 export async function getCampaignReport(connection, options = {}) {
   const warnings = [];
-  const uploaderUrl = String(options.uploaderUrl || process.env.CAMPAIGN_UPLOADER_URL || "").replace(/\/+$/, "");
+  const rawUrls = options.uploaderUrl != null && options.uploaderUrl !== "" ? options.uploaderUrl : (process.env.CAMPAIGN_UPLOADER_URL || "");
+  const uploaderUrls = parseUploaderUrls(rawUrls);
   const limit = Math.max(1, Math.min(Number(options.limit || 200), 200));
+  const token = options.uploaderToken || process.env.CAMPAIGN_UPLOADER_TOKEN || "";
 
-  let jobs = [];
-  if (!uploaderUrl) {
-    warnings.push("Campaign uploader URL is not set. Set CAMPAIGN_UPLOADER_URL (or pass options.uploaderUrl) to load campaigns.");
+  // Support several uploader instances (e.g. Campaign + Campaign Sales): fetch each,
+  // tag every job with its source host, and aggregate them together.
+  const jobs = [];
+  if (!uploaderUrls.length) {
+    warnings.push("Campaign uploader URL is not set. Set CAMPAIGN_UPLOADER_URL (comma-separated for multiple) to load campaigns.");
   } else {
-    try {
-      jobs = await fetchUploaderJobs(uploaderUrl, {
-        limit,
-        token: options.uploaderToken || process.env.CAMPAIGN_UPLOADER_TOKEN || ""
-      });
-    } catch (error) {
-      warnings.push(`Could not load campaigns from the uploader: ${error.message}`);
+    for (const url of uploaderUrls) {
+      try {
+        const fetched = await fetchUploaderJobs(url, { limit, token });
+        for (const job of fetched) jobs.push({ ...job, _source: hostLabel(url) });
+      } catch (error) {
+        warnings.push(`Could not load campaigns from ${hostLabel(url)}: ${error.message}`);
+      }
     }
   }
 
@@ -103,10 +108,24 @@ export async function getCampaignReport(connection, options = {}) {
   const aggregated = aggregateCampaignJobs(jobs, { inboxLookup });
   return {
     generatedAt: new Date().toISOString(),
-    source: uploaderUrl || null,
+    sources: uploaderUrls,
     ...aggregated,
     warnings
   };
+}
+
+// Accepts one URL, several comma/space/newline separated URLs, or an array.
+export function parseUploaderUrls(raw) {
+  const list = Array.isArray(raw) ? raw : String(raw || "").split(/[\s,]+/);
+  return [...new Set(list.map(url => String(url).trim().replace(/\/+$/, "")).filter(Boolean))];
+}
+
+function hostLabel(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return String(url);
+  }
 }
 
 async function fetchUploaderJobs(uploaderUrl, { limit, token }) {
