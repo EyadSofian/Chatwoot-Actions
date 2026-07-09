@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { aggregateCampaignJobs, bucketForStatus } from "../src/campaignAnalytics.js";
+import { aggregateCampaignJobs, bucketForStatus, parseUploaderUrls } from "../src/campaignAnalytics.js";
 
 const sampleJobs = [
   { type: "send", status: "running", active: true, createdAt: "2026-07-01T09:00:00.000Z", total: 100, counters: { sent: 40, failed: 2 }, settings: { originalLabelName: "Revit_July", templateName: "promo_ar", inboxId: "15" }, operatorName: "Sara" },
@@ -69,4 +69,26 @@ test("aggregateCampaignJobs returns empty shape for no jobs", () => {
   assert.equal(report.totals.totalCampaigns, 0);
   assert.deepEqual(report.perInbox, []);
   assert.deepEqual(report.campaigns, []);
+});
+
+test("parseUploaderUrls splits and de-dupes multiple URLs", () => {
+  assert.deepEqual(
+    parseUploaderUrls("https://a.railway.app/, https://b.railway.app"),
+    ["https://a.railway.app", "https://b.railway.app"]
+  );
+  assert.deepEqual(parseUploaderUrls("https://a.app\nhttps://a.app https://b.app"), ["https://a.app", "https://b.app"]);
+  assert.deepEqual(parseUploaderUrls(""), []);
+  assert.deepEqual(parseUploaderUrls(["https://x.app/"]), ["https://x.app"]);
+});
+
+test("aggregateCampaignJobs carries the uploader source per campaign", () => {
+  const report = aggregateCampaignJobs([
+    { type: "send", status: "running", _source: "campaign.railway.app", createdAt: "2026-07-01", counters: { sent: 1 }, settings: { originalLabelName: "A", inboxId: "15" } },
+    { type: "send", status: "running", _source: "sales.railway.app", createdAt: "2026-07-02", counters: { sent: 2 }, settings: { originalLabelName: "B", inboxId: "16" } }
+  ], {});
+  assert.equal(report.totals.totalCampaigns, 2);
+  const a = report.campaigns.find(row => row.name === "A");
+  const b = report.campaigns.find(row => row.name === "B");
+  assert.equal(a.source, "campaign.railway.app");
+  assert.equal(b.source, "sales.railway.app");
 });

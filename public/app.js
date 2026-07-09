@@ -89,6 +89,7 @@ const translations = {
     "Reads broadcast campaigns from the Campaign Uploader service. Set its public URL below.": "بيقرأ كامبينات البرودكاست من خدمة Campaign Uploader. حط اللينك العام بتاعها تحت.",
     "Campaign Uploader URL": "لينك Campaign Uploader",
     "Example: https://your-uploader.up.railway.app": "مثال: https://your-uploader.up.railway.app",
+    "Separate multiple uploader URLs with commas.": "افصل بين روابط الـ uploaders المتعددة بفاصلة (,).",
     "Leave empty to use the server's CAMPAIGN_UPLOADER_URL.": "سيبه فاضي عشان يستخدم CAMPAIGN_UPLOADER_URL بتاع السيرفر.",
     "Load campaigns": "تحميل الكامبينات",
     "Download campaigns CSV": "تحميل الكامبينات CSV",
@@ -1639,6 +1640,7 @@ function campaignAnalyticsView() {
     name: row.name,
     statusBucket: tr(campaignStatusLabel(row.statusBucket)),
     inboxName: row.inboxName,
+    source: row.source || "",
     template: row.template,
     sent: row.sent,
     total: row.total,
@@ -1660,7 +1662,7 @@ function campaignAnalyticsView() {
         <div class="form-grid">
           ${inputField("campaignUploaderUrl", "Campaign Uploader URL", state.campaignUploaderUrl || "", "text")}
         </div>
-        <p class="notice">${tr("Example: https://your-uploader.up.railway.app")} ${tr("Leave empty to use the server's CAMPAIGN_UPLOADER_URL.")}</p>
+        <p class="notice">${tr("Example: https://your-uploader.up.railway.app")} ${tr("Separate multiple uploader URLs with commas.")} ${tr("Leave empty to use the server's CAMPAIGN_UPLOADER_URL.")}</p>
         <div class="actions">
           <button class="button" data-action="load-campaign-report">${tr("Load campaigns")}</button>
           <button class="button secondary" data-action="export-campaign-report" ${report ? "" : "disabled"}>${tr("Download campaigns CSV")}</button>
@@ -1684,7 +1686,7 @@ function campaignAnalyticsView() {
     </section>
     <section class="panel" style="margin-top:16px">
       <div class="panel-header"><h2>${tr("All campaigns")}</h2></div>
-      <div class="panel-body">${simpleTable(campaignRows, ["name", "statusBucket", "inboxName", "template", "sent", "total", "failed", "operatorName", "createdAt"])}</div>
+      <div class="panel-body">${simpleTable(campaignRows, ["name", "statusBucket", "inboxName", "source", "template", "sent", "total", "failed", "operatorName", "createdAt"])}</div>
     </section>
   `;
 }
