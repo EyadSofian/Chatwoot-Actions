@@ -12,7 +12,9 @@ const files = {
   campaigns: join(dataDir, "campaigns.json"),
   departmentRoutes: join(dataDir, "department-routes.json"),
   automationSettings: join(dataDir, "automation-settings.json"),
-  metrics: join(dataDir, "metrics.json")
+  metrics: join(dataDir, "metrics.json"),
+  digestRecipients: join(dataDir, "digest-recipients.json"),
+  digestState: join(dataDir, "digest-state.json")
 };
 
 const METRICS_STORE_LIMIT = Math.max(1000, Number(process.env.METRICS_STORE_LIMIT) || 50000);

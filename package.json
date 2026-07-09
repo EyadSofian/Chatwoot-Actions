@@ -12,6 +12,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "nodemailer": "^9.0.3",
     "read-excel-file": "^9.0.10"
   }
 }

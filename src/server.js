@@ -36,6 +36,16 @@ import {
   runCustomerTimeoutSweep
 } from "./operations.js";
 import { forwardIncomingToBotpress, handleBotpressResponse } from "./botpressBridge.js";
+import { getCampaignReport } from "./campaignAnalytics.js";
+import {
+  isDigestEmailConfigured,
+  readDigestRecipients,
+  readDigestState,
+  runDailyDigest,
+  saveDigestRecipients,
+  shouldRunDigestNow,
+  writeDigestLastRun
+} from "./emailDigest.js";
 
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const publicDir = join(rootDir, "public");
@@ -76,6 +86,7 @@ server.listen(port, host, () => {
 });
 
 startCustomerTimeoutSweep();
+startAnalyticsDigestScheduler();
 
 // Background sweep: hand off conversations the customer abandoned mid-chat with
 // Fahd. Opt-in via CUSTOMER_TIMEOUT_ENABLED so it is inert unless configured.
@@ -109,6 +120,38 @@ function startCustomerTimeoutSweep() {
   const timer = setInterval(tick, intervalMs);
   if (typeof timer.unref === "function") timer.unref();
   console.log(`Customer-timeout sweep enabled (every ${intervalMs / 1000}s, ${minutes}m threshold)`);
+}
+
+// Background scheduler: build the analytics + campaign digest once per local day and
+// email it (per-recipient inbox scope) via Zoho SMTP. Opt-in via ANALYTICS_DIGEST_ENABLED.
+function startAnalyticsDigestScheduler() {
+  if (!parseBooleanEnv(process.env.ANALYTICS_DIGEST_ENABLED)) return;
+  const hour = Number(process.env.ANALYTICS_DIGEST_HOUR || 8);
+  const timezone = process.env.ANALYTICS_DIGEST_TIMEZONE || "Africa/Cairo";
+  let running = false;
+
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const state = await readDigestState();
+      const runDate = shouldRunDigestNow(new Date(), { hour, timezone, lastRunDate: state.lastRunDate || "" });
+      if (!runDate) return;
+      // Claim the day before sending so a mid-run error cannot trigger a resend loop.
+      await writeDigestLastRun(runDate);
+      const result = await runDailyDigest({ uploaderUrl: process.env.CAMPAIGN_UPLOADER_URL });
+      console.log("analytics-digest:", JSON.stringify({ date: runDate, sent: result.sent, total: result.total }));
+    } catch (error) {
+      console.log("analytics-digest error:", error.message);
+    } finally {
+      running = false;
+    }
+  };
+
+  const timer = setInterval(tick, 15 * 60 * 1000);
+  if (typeof timer.unref === "function") timer.unref();
+  tick();
+  console.log(`Analytics digest scheduler enabled (daily ~${hour}:00 ${timezone})`);
 }
 
 function parseBooleanEnv(value) {
@@ -233,6 +276,37 @@ async function route(req, res) {
   if (req.method === "POST" && url.pathname === "/api/reports/analytics") {
     const body = await readJsonBody(req);
     return sendJson(res, 200, await getAnalyticsReport(body.connection, body.filters || body.criteria || {}));
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/reports/campaigns") {
+    const body = await readJsonBody(req);
+    return sendJson(res, 200, await getCampaignReport(body.connection, body.options || body.filters || {}));
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/digest/recipients") {
+    return sendJson(res, 200, {
+      recipients: await readDigestRecipients(),
+      emailConfigured: isDigestEmailConfigured(),
+      enabled: parseBooleanEnv(process.env.ANALYTICS_DIGEST_ENABLED)
+    });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/digest/recipients") {
+    const body = await readJsonBody(req);
+    const recipients = await saveDigestRecipients(body.recipients || [], body.actor || null);
+    return sendJson(res, 200, { recipients, saved: true });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/digest/run") {
+    const body = await readJsonBody(req);
+    if (!isDigestEmailConfigured()) {
+      return sendJson(res, 400, { error: "Zoho SMTP is not configured. Set ZOHO_SMTP_USER and ZOHO_SMTP_PASS on the server." });
+    }
+    const result = await runDailyDigest({
+      connection: body.connection,
+      uploaderUrl: body.uploaderUrl || process.env.CAMPAIGN_UPLOADER_URL
+    });
+    return sendJson(res, 200, result);
   }
 
   if (req.method === "POST" && url.pathname === "/api/conversations/open-report") {

@@ -13,6 +13,10 @@ const state = {
   openReport: null,
   analytics: null,
   analyticsFilters: { since: "", until: "", inboxId: "" },
+  campaignReport: null,
+  campaignUploaderUrl: localStorage.getItem("campaignUploaderUrl") || "",
+  digestRecipients: [],
+  digestMeta: { emailConfigured: false, enabled: false },
   jobs: [],
   audit: [],
   campaigns: [],
@@ -80,6 +84,49 @@ const translations = {
     "resolutionsCount": "عدد الحلول",
     "avgFirstResponseTime": "متوسط أول رد",
     "avgResolutionTime": "متوسط زمن الحل",
+    "Campaign Analytics": "تحليل الكامبينات",
+    "Broadcast campaigns from the uploader: running vs pending, per inbox, and totals.": "كامبينات البرودكاست من الابلودر: اللي شغّال vs المنتظر، لكل إنبوكس، والإجماليات.",
+    "Reads broadcast campaigns from the Campaign Uploader service. Set its public URL below.": "بيقرأ كامبينات البرودكاست من خدمة Campaign Uploader. حط اللينك العام بتاعها تحت.",
+    "Campaign Uploader URL": "لينك Campaign Uploader",
+    "Example: https://your-uploader.up.railway.app": "مثال: https://your-uploader.up.railway.app",
+    "Leave empty to use the server's CAMPAIGN_UPLOADER_URL.": "سيبه فاضي عشان يستخدم CAMPAIGN_UPLOADER_URL بتاع السيرفر.",
+    "Load campaigns": "تحميل الكامبينات",
+    "Download campaigns CSV": "تحميل الكامبينات CSV",
+    "No campaigns to download.": "لا يوجد كامبينات للتحميل.",
+    "Campaigns CSV downloaded.": "تم تحميل ملف الكامبينات CSV.",
+    "Total campaigns": "إجمالي الكامبينات",
+    "Running now": "شغّال دلوقتي",
+    "Pending (not started)": "منتظر (لسه مبدأش)",
+    "Completed": "خلص",
+    "Failed": "فشل",
+    "Running": "شغّال",
+    "Stopped": "متوقف",
+    "Messages sent": "الرسائل المرسلة",
+    "Campaigns per inbox": "الكامبينات لكل إنبوكس",
+    "All campaigns": "كل الكامبينات",
+    "campaignCount": "عدد الكامبينات",
+    "sentTotal": "إجمالي المرسل",
+    "statusBucket": "الحالة",
+    "operatorName": "المشغّل",
+    "template": "التمبلت",
+    "Email Digest": "تقرير بالإيميل",
+    "Daily analytics email per recipient, scoped by inbox, over Zoho SMTP.": "إيميل تحليلات يومي لكل مستقبل، مخصّص بإنبوكس، عبر Zoho SMTP.",
+    "Each recipient gets a daily report scoped to their inbox, over Zoho SMTP.": "كل مستقبل بياخد تقرير يومي مخصّص بالإنبوكس بتاعه، عبر Zoho SMTP.",
+    "Zoho SMTP is configured on the server.": "Zoho SMTP متظبّط على السيرفر.",
+    "Zoho SMTP is NOT configured. Set ZOHO_SMTP_USER and ZOHO_SMTP_PASS on the server.": "Zoho SMTP مش متظبّط. حط ZOHO_SMTP_USER و ZOHO_SMTP_PASS على السيرفر.",
+    "Daily schedule is ON.": "الجدولة اليومية شغّالة.",
+    "Daily schedule is OFF (set ANALYTICS_DIGEST_ENABLED=true).": "الجدولة اليومية مقفولة (حط ANALYTICS_DIGEST_ENABLED=true).",
+    "No recipients yet. Add one below.": "لا يوجد مستقبلين بعد. أضف واحد تحت.",
+    "Email": "الإيميل",
+    "Label (optional)": "وصف (اختياري)",
+    "Remove": "حذف",
+    "Add recipient": "إضافة مستقبل",
+    "Save recipients": "حفظ المستقبلين",
+    "Send now (test)": "إرسال الآن (تجربة)",
+    "Send now saves the list, then emails every recipient immediately with their scoped report.": "الإرسال الآن بيحفظ القائمة، وبعدين يبعت لكل مستقبل تقريره المخصّص فورًا.",
+    "Recipients saved.": "تم حفظ المستقبلين.",
+    "No recipients to send to.": "لا يوجد مستقبلين للإرسال.",
+    "Digest sent: {sent}/{total}.": "تم الإرسال: {sent}/{total}.",
     "Open Report": "تقرير المفتوح",
     "Phone Assign": "تعيين بالأرقام",
     "Campaigns": "الحملات",
@@ -446,6 +493,8 @@ const tabs = [
   ["phone_assign", "Phone Assign"],
   ["dashboard", "Dashboard"],
   ["analytics", "Analytics"],
+  ["campaign_analytics", "Campaign Analytics"],
+  ["email_digest", "Email Digest"],
   ["campaigns", "Campaigns"],
   ["audit", "Logs"],
   ["exports", "Exports"],
@@ -459,6 +508,8 @@ const titles = {
   phone_assign: ["Phone Assign", "Assign open conversations by uploaded or pasted phone numbers."],
   dashboard: ["Dashboard", "Counters, report snapshots, and Chatwoot embedded context."],
   analytics: ["Analytics", "Lead sources, CSAT, and per-agent / per-team response times."],
+  campaign_analytics: ["Campaign Analytics", "Broadcast campaigns from the uploader: running vs pending, per inbox, and totals."],
+  email_digest: ["Email Digest", "Daily analytics email per recipient, scoped by inbox, over Zoho SMTP."],
   campaigns: ["Campaigns", "Track local campaigns and Chatwoot webhook reply signals."],
   audit: ["Logs", "Who did what, when, and which bulk job changed it."],
   exports: ["Exports", "Download CSV files for audit logs, campaigns, and bulk jobs."],
@@ -537,6 +588,8 @@ function render() {
   if (state.tab === "phone_assign") view.innerHTML = phoneAssignView();
   if (state.tab === "dashboard") view.innerHTML = dashboardView();
   if (state.tab === "analytics") view.innerHTML = analyticsView();
+  if (state.tab === "campaign_analytics") view.innerHTML = campaignAnalyticsView();
+  if (state.tab === "email_digest") view.innerHTML = emailDigestView();
   if (state.tab === "campaigns") view.innerHTML = campaignsView();
   if (state.tab === "audit") view.innerHTML = auditView();
   if (state.tab === "exports") view.innerHTML = exportsView();
@@ -1179,6 +1232,12 @@ function bindViewEvents() {
     });
   });
 
+  document.querySelectorAll("[data-digest-remove]").forEach(element => {
+    element.addEventListener("click", event => {
+      removeDigestRecipient(Number(event.currentTarget.dataset.digestRemove));
+    });
+  });
+
   const phoneRaw = document.getElementById("phoneNumbersRaw");
   if (phoneRaw) {
     phoneRaw.addEventListener("input", event => {
@@ -1208,6 +1267,12 @@ async function runAction(action) {
   if (action === "load-reports") return loadReports();
   if (action === "load-analytics") return loadAnalytics();
   if (action === "export-analytics") return exportAnalytics();
+  if (action === "load-campaign-report") return loadCampaignReport();
+  if (action === "export-campaign-report") return exportCampaignReport();
+  if (action === "load-digest") return loadDigest();
+  if (action === "save-digest-recipients") return saveDigest();
+  if (action === "add-digest-recipient") return addDigestRecipient();
+  if (action === "send-digest-now") return sendDigestNow();
   if (action === "load-audit") return loadAudit();
   if (action === "fetch-chatwoot-audit") return fetchChatwootAudit();
   if (action === "create-campaign") return createCampaign();
@@ -1323,6 +1388,8 @@ async function refreshActiveTab() {
   if (state.tab === "automation") return loadAutomationSettings();
   if (state.tab === "dashboard") return loadReports();
   if (state.tab === "analytics") return loadAnalytics();
+  if (state.tab === "campaign_analytics") return loadCampaignReport();
+  if (state.tab === "email_digest") return loadDigest();
   if (state.tab === "audit") return loadAudit();
   if (state.tab === "campaigns") return Promise.all([loadCampaigns(), loadWebhooks()]);
   if (state.tab === "exports") return loadJobs();
@@ -1553,6 +1620,200 @@ function formatDuration(seconds) {
   if (minutes) parts.push(`${minutes}m`);
   if (remaining || parts.length === 0) parts.push(`${remaining}s`);
   return parts.join(" ");
+}
+
+function campaignAnalyticsView() {
+  const report = state.campaignReport;
+  const totals = report?.totals || {};
+  const warnings = (report?.warnings || []).map(item => `<p class="notice warn">${escapeHtml(item)}</p>`).join("");
+  const inboxRows = (report?.perInbox || []).map(row => ({
+    inboxName: row.inboxName,
+    inboxId: row.inboxId,
+    campaignCount: row.campaignCount,
+    running: row.running,
+    pending: row.pending,
+    completed: row.completed,
+    sentTotal: row.sentTotal
+  }));
+  const campaignRows = (report?.campaigns || []).map(row => ({
+    name: row.name,
+    statusBucket: tr(campaignStatusLabel(row.statusBucket)),
+    inboxName: row.inboxName,
+    template: row.template,
+    sent: row.sent,
+    total: row.total,
+    failed: row.failed,
+    operatorName: row.operatorName,
+    createdAt: (row.createdAt || "").slice(0, 10)
+  }));
+
+  return `
+    ${embeddedBanner()}
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>${tr("Campaign Analytics")}</h2>
+          <p class="panel-note">${tr("Reads broadcast campaigns from the Campaign Uploader service. Set its public URL below.")}</p>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+          ${inputField("campaignUploaderUrl", "Campaign Uploader URL", state.campaignUploaderUrl || "", "text")}
+        </div>
+        <p class="notice">${tr("Example: https://your-uploader.up.railway.app")} ${tr("Leave empty to use the server's CAMPAIGN_UPLOADER_URL.")}</p>
+        <div class="actions">
+          <button class="button" data-action="load-campaign-report">${tr("Load campaigns")}</button>
+          <button class="button secondary" data-action="export-campaign-report" ${report ? "" : "disabled"}>${tr("Download campaigns CSV")}</button>
+        </div>
+      </div>
+    </section>
+    ${warnings}
+    <div class="grid three" style="margin-top:16px">
+      ${stat("Total campaigns", totals.totalCampaigns ?? "-")}
+      ${stat("Running now", totals.running ?? "-")}
+      ${stat("Pending (not started)", totals.pending ?? "-")}
+    </div>
+    <div class="grid three" style="margin-top:16px">
+      ${stat("Completed", totals.completed ?? "-")}
+      ${stat("Failed", totals.failed ?? "-")}
+      ${stat("Messages sent", totals.sentTotal ?? "-")}
+    </div>
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>${tr("Campaigns per inbox")}</h2></div>
+      <div class="panel-body">${simpleTable(inboxRows, ["inboxName", "inboxId", "campaignCount", "running", "pending", "completed", "sentTotal"])}</div>
+    </section>
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>${tr("All campaigns")}</h2></div>
+      <div class="panel-body">${simpleTable(campaignRows, ["name", "statusBucket", "inboxName", "template", "sent", "total", "failed", "operatorName", "createdAt"])}</div>
+    </section>
+  `;
+}
+
+function campaignStatusLabel(bucket) {
+  const map = { running: "Running", pending: "Pending", completed: "Completed", failed: "Failed", stopped: "Stopped", other: "Other" };
+  return map[bucket] || bucket;
+}
+
+async function loadCampaignReport() {
+  const uploaderUrl = value("campaignUploaderUrl").trim();
+  state.campaignUploaderUrl = uploaderUrl;
+  if (uploaderUrl) localStorage.setItem("campaignUploaderUrl", uploaderUrl);
+  else localStorage.removeItem("campaignUploaderUrl");
+  state.campaignReport = await api("/api/reports/campaigns", {
+    connection: state.connection,
+    options: { uploaderUrl }
+  });
+  render();
+}
+
+function exportCampaignReport() {
+  if (!state.campaignReport) return notify(tr("No campaigns to download."), "warn");
+  const rows = (state.campaignReport.campaigns || []).map(row => ({
+    name: row.name,
+    status: row.status,
+    statusBucket: row.statusBucket,
+    inboxName: row.inboxName,
+    inboxId: row.inboxId,
+    template: row.template,
+    sent: row.sent,
+    total: row.total,
+    failed: row.failed,
+    operatorName: row.operatorName,
+    createdAt: row.createdAt
+  }));
+  const fileName = `chatwoot-campaigns-${new Date().toISOString().slice(0, 10)}.csv`;
+  downloadCsv(fileName, rows);
+  notify(tr("Campaigns CSV downloaded."), "ok");
+}
+
+function emailDigestView() {
+  const meta = state.digestMeta || {};
+  const recipients = state.digestRecipients || [];
+  const statusBanner = `
+    <p class="notice ${meta.emailConfigured ? "" : "warn"}">
+      ${meta.emailConfigured ? tr("Zoho SMTP is configured on the server.") : tr("Zoho SMTP is NOT configured. Set ZOHO_SMTP_USER and ZOHO_SMTP_PASS on the server.")}
+      ${meta.enabled ? tr("Daily schedule is ON.") : tr("Daily schedule is OFF (set ANALYTICS_DIGEST_ENABLED=true).")}
+    </p>`;
+  const rows = recipients.length
+    ? recipients.map((recipient, index) => `
+      <div class="form-grid" data-digest-row="${index}" style="align-items:end;margin-bottom:8px">
+        ${inputField(`digestEmail_${index}`, "Email", recipient.email || "", "email")}
+        ${inboxSelect(`digestInbox_${index}`, "Inbox", recipient.inboxId || "")}
+        ${inputField(`digestLabel_${index}`, "Label (optional)", recipient.label || "", "text")}
+        <button class="button secondary" type="button" data-digest-remove="${index}">${tr("Remove")}</button>
+      </div>`).join("")
+    : `<p class="notice">${tr("No recipients yet. Add one below.")}</p>`;
+
+  return `
+    ${embeddedBanner()}
+    <section class="panel">
+      <div class="panel-header"><div>
+        <h2>${tr("Email Digest")}</h2>
+        <p class="panel-note">${tr("Each recipient gets a daily report scoped to their inbox, over Zoho SMTP.")}</p>
+      </div></div>
+      <div class="panel-body">
+        ${statusBanner}
+        ${rows}
+        <div class="actions">
+          <button class="button secondary" data-action="add-digest-recipient">${tr("Add recipient")}</button>
+          <button class="button" data-action="save-digest-recipients">${tr("Save recipients")}</button>
+          <button class="button secondary" data-action="send-digest-now" ${meta.emailConfigured ? "" : "disabled"}>${tr("Send now (test)")}</button>
+        </div>
+        <p class="notice">${tr("Send now saves the list, then emails every recipient immediately with their scoped report.")}</p>
+      </div>
+    </section>
+  `;
+}
+
+function digestRecipientsFromForm() {
+  return [...document.querySelectorAll("[data-digest-row]")].map(rowEl => {
+    const index = rowEl.dataset.digestRow;
+    return {
+      email: value(`digestEmail_${index}`).trim(),
+      inboxId: value(`digestInbox_${index}`).trim(),
+      label: value(`digestLabel_${index}`).trim()
+    };
+  });
+}
+
+async function loadDigest() {
+  const data = await getJson("/api/digest/recipients");
+  state.digestRecipients = data.recipients || [];
+  state.digestMeta = { emailConfigured: Boolean(data.emailConfigured), enabled: Boolean(data.enabled) };
+  render();
+}
+
+async function saveDigest() {
+  const actor = state.appContext?.currentAgent || { name: state.connection.operatorName || "Ops Admin" };
+  const data = await api("/api/digest/recipients", { recipients: digestRecipientsFromForm(), actor });
+  state.digestRecipients = data.recipients || [];
+  render();
+  notify(tr("Recipients saved."), "ok");
+}
+
+function addDigestRecipient() {
+  state.digestRecipients = [...digestRecipientsFromForm(), { email: "", inboxId: "", label: "" }];
+  render();
+}
+
+function removeDigestRecipient(index) {
+  const rows = digestRecipientsFromForm();
+  rows.splice(index, 1);
+  state.digestRecipients = rows;
+  render();
+}
+
+async function sendDigestNow() {
+  await saveDigest();
+  const result = await api("/api/digest/run", {
+    connection: state.connection,
+    uploaderUrl: state.campaignUploaderUrl || ""
+  });
+  if (result.skipped) return notify(tr("No recipients to send to."), "warn");
+  const failed = (result.results || []).filter(item => !item.ok);
+  const message = tr("Digest sent: {sent}/{total}.", { sent: result.sent, total: result.total }) +
+    (failed.length ? ` — ${failed.map(item => item.email).join(", ")}` : "");
+  notify(message, failed.length ? "warn" : "ok");
 }
 
 async function handlePhoneFile(file) {
