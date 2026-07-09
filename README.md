@@ -253,6 +253,42 @@ The report object is built by the pure `aggregateAnalytics()` helper (CSAT + lea
 METRICS_STORE_LIMIT=50000
 ```
 
+## Campaign Analytics
+
+The **Campaign Analytics** tab (and `POST /api/reports/campaigns`) reads broadcast campaigns from the separate [Campaign Uploader](https://github.com/EyadSofian/chatwoot-campain-uploder) service over HTTP (`GET /api/jobs`) and merges live Chatwoot inbox names. It answers: how many campaigns exist, which are **running** vs **pending (not started)** vs **completed/failed**, the name and template of each campaign, its inbox, total messages sent, and the **campaign count per inbox**.
+
+Only `send` jobs are treated as campaigns (`upload` jobs are contact imports). Set the uploader's public URL either in the tab or on the server:
+
+```text
+CAMPAIGN_UPLOADER_URL=https://your-uploader.up.railway.app
+# Optional, only if the uploader's /api/jobs is protected:
+CAMPAIGN_UPLOADER_TOKEN=your-secret
+```
+
+It is best-effort — if the uploader or Chatwoot is unreachable the tab still renders what it could load, with a warning.
+
+## Email Digest
+
+The **Email Digest** tab sends a **daily analytics email per recipient**, each scoped to its own inbox, over **Zoho Mail SMTP**. The email bundles CSAT, lead sources, per-agent / per-team response times, and campaign totals for that recipient's inbox. Recipients are managed in the tab (saved to `DATA_DIR/digest-recipients.json`) and can be seeded from an env var.
+
+```text
+ANALYTICS_DIGEST_ENABLED=true
+ANALYTICS_DIGEST_HOUR=8                       # local hour to send (default 8)
+ANALYTICS_DIGEST_TIMEZONE=Africa/Cairo        # IANA timezone (default Africa/Cairo)
+ANALYTICS_DIGEST_FROM=reports@your-domain.com # defaults to ZOHO_SMTP_USER
+
+# Zoho Mail SMTP (use an app-specific password, not your login password):
+ZOHO_SMTP_HOST=smtp.zoho.com                  # default
+ZOHO_SMTP_PORT=465                            # 465 (SSL) or 587 (TLS)
+ZOHO_SMTP_USER=reports@your-domain.com
+ZOHO_SMTP_PASS=your-zoho-app-password
+
+# Optional seed (the tab overrides this once you save there):
+ANALYTICS_DIGEST_RECIPIENTS=[{"email":"a@x.com","inboxId":"15","label":"Sales"}]
+```
+
+The scheduler fires once per local day at or after `ANALYTICS_DIGEST_HOUR` and never twice the same day (it claims the day before sending). Use **Send now (test)** in the tab to email everyone immediately. The whole feature is inert until `ZOHO_SMTP_USER`/`ZOHO_SMTP_PASS` and at least one recipient are configured.
+
 ## Department Router
 
 The Department Router implements the trainee WhatsApp flow from the operations playbook. It asks customers to choose Sales, Trainee Support, or Complaints, then routes only inside the configured Chatwoot teams/inbox.
