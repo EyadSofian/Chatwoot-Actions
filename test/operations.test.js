@@ -1503,6 +1503,219 @@ test("handleResolveSurveyWebhook does not re-survey a conversation that was alre
   }
 });
 
+test("handleResolveSurveyWebhook asks the lead source first on resolve when RESOLVE_SURVEY_ASK_LEAD_SOURCE is on", async () => {
+  const messages = [];
+  let customAttributesBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "resolved",
+        inbox_id: 25,
+        custom_attributes: {},
+        meta: { sender: { id: 10, name: "Customer" }, assignee: { id: 7, name: "Mona" } }
+      }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "GET") {
+      res.end(JSON.stringify({ id: 10, custom_attributes: {} }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 700 + messages.length }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleResolveSurveyWebhook(resolveStatusPayload("resolved"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      askLeadSource: true,
+      leadSource: {
+        options: "فيسبوك=facebook|إنستجرام=instagram",
+        promptText: "عرفتنا منين؟\n{options}",
+        confirmText: "تم التسجيل ✅"
+      },
+      ackText: "",
+      ratingText: "قيّم من {min} إلى {max}",
+      audit: false
+    });
+
+    // On resolve it asks the lead source, NOT the rating, and parks in awaiting_source.
+    assert.equal(result.action, "resolve_survey_source_prompted");
+    assert.deepEqual(messages.map(item => item.content), ["عرفتنا منين؟\n1. فيسبوك\n2. إنستجرام"]);
+    assert.equal(customAttributesBody.custom_attributes.resolve_survey_state, "awaiting_source");
+    assert.equal(customAttributesBody.custom_attributes.resolve_survey_agent_name, "Mona");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleResolveSurveyWebhook saves the source, confirms, then asks for the rating", async () => {
+  const messages = [];
+  let customAttributesBody = null;
+  let contactBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "open",
+        inbox_id: 25,
+        custom_attributes: {
+          resolve_survey_state: "awaiting_source",
+          resolve_survey_agent_id: "7",
+          resolve_survey_agent_name: "Mona"
+        },
+        meta: { sender: { id: 10, name: "Customer" }, assignee: null }
+      }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "GET") {
+      res.end(JSON.stringify({ id: 10, custom_attributes: {} }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "PUT") {
+      contactBody = await readRequestJson(req);
+      res.end(JSON.stringify({ id: 10, ...contactBody }));
+      return;
+    }
+    if (url.pathname.endsWith("/labels") && req.method === "GET") {
+      res.end(JSON.stringify({ payload: [] }));
+      return;
+    }
+    if (url.pathname.endsWith("/labels") && req.method === "POST") {
+      await readRequestJson(req);
+      res.end(JSON.stringify({ payload: [] }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 800 + messages.length }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    // Customer replies "1" (فيسبوك) to the lead-source question.
+    const result = await handleResolveSurveyWebhook(leadSourcePayload("1"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      askLeadSource: true,
+      leadSource: {
+        options: "فيسبوك=facebook|إنستجرام=instagram",
+        promptText: "عرفتنا منين؟\n{options}",
+        confirmText: "تم التسجيل ✅"
+      },
+      ratingText: "قيّم خدمتنا{agent} من {min} إلى {max}",
+      agentTemplate: " ({agent})",
+      audit: false
+    });
+
+    assert.equal(result.action, "resolve_survey_source_collected");
+    assert.equal(result.value, "facebook");
+    assert.equal(result.label, "فيسبوك");
+    // Confirmation first, then the rating question (which names the stored agent).
+    assert.deepEqual(messages.map(item => item.content), [
+      "تم التسجيل ✅",
+      "قيّم خدمتنا (Mona) من 1 إلى 5"
+    ]);
+    // Source recorded on both the contact and the conversation; survey now awaits the rating.
+    assert.equal(contactBody.custom_attributes.lead_source, "facebook");
+    assert.equal(customAttributesBody.custom_attributes.lead_source, "facebook");
+    assert.equal(customAttributesBody.custom_attributes.resolve_survey_state, "awaiting_rating");
+    assert.equal(customAttributesBody.custom_attributes.resolve_survey_agent_name, "Mona");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleResolveSurveyWebhook skips the lead source and asks only the rating when the contact already answered", async () => {
+  const messages = [];
+  let customAttributesBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "resolved",
+        inbox_id: 25,
+        custom_attributes: {},
+        meta: { sender: { id: 10, name: "Customer" }, assignee: { id: 7, name: "Mona" } }
+      }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/contacts/10" && req.method === "GET") {
+      // Contact already told us where they came from in a previous conversation.
+      res.end(JSON.stringify({ id: 10, custom_attributes: { lead_source: "facebook" } }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 900 + messages.length }));
+      return;
+    }
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleResolveSurveyWebhook(resolveStatusPayload("resolved"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      askLeadSource: true,
+      leadSource: { options: "فيسبوك=facebook|إنستجرام=instagram" },
+      ackText: "",
+      ratingText: "قيّم من {min} إلى {max}",
+      audit: false
+    });
+
+    // Straight to the rating — no lead-source question.
+    assert.equal(result.action, "resolve_survey_prompted");
+    assert.deepEqual(messages.map(item => item.content), ["قيّم من 1 إلى 5"]);
+    assert.equal(customAttributesBody.custom_attributes.resolve_survey_state, "awaiting_rating");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("getOpenConversationReport can filter unread conversations locally", async () => {
   const server = createServer((req, res) => {
     const url = new URL(req.url, "http://127.0.0.1");

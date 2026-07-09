@@ -237,6 +237,31 @@ LEAD_SOURCE_ROUTER_ENABLED=false
 
 All texts support `\n` for line breaks. Placeholders: `{min}`/`{max}` (scale bounds), `{agent}` in the rating text (expands to `RESOLVE_SURVEY_AGENT_TEMPLATE` with the agent name, or nothing when the conversation was unassigned), and `{rating}`/`{max}` in the thanks text. Set `RESOLVE_SURVEY_ACK_TEXT=` or `RESOLVE_SURVEY_THANKS_TEXT=` (empty) to skip either message. Use a **dedicated inbox** for the survey — one that is not also a Fahd/Botpress bot inbox — so the rating reply is captured by the survey and not forwarded to the bot.
 
+### Ask the lead source *after* resolve, then rate
+
+Set `RESOLVE_SURVEY_ASK_LEAD_SOURCE=true` to run the lead-source question ("how did you hear about us?") and the rating as **one survey after the conversation is resolved**. The order is:
+
+1. On resolve, send the lead-source question (`LEAD_SOURCE_PROMPT_TEXT` + the numbered `LEAD_SOURCE_OPTIONS`).
+2. When the customer picks a source, save it (custom attribute + contact/conversation label, exactly like the standalone router) and send `LEAD_SOURCE_CONFIRM_TEXT`.
+3. Then immediately send the rating request (`RESOLVE_SURVEY_RATING_TEXT`).
+4. When the customer replies with a number, store the `csat_rating` and thank them.
+
+This **reuses the whole `LEAD_SOURCE_*` content config** (options, prompt, confirmation, label colour, attribute key) — you do not reconfigure the choices. The only difference is timing: the question is asked after resolve instead of at the start. If the customer already gave their source before (respecting `LEAD_SOURCE_ASK_ONCE_PER_CONTACT`, default on), the survey skips straight to the rating. An unrecognized reply at either step is released to the normal flow, so a fresh question is never swallowed.
+
+To move the lead-source question entirely to after resolve, turn the start-of-conversation router off and the combined survey on:
+
+```text
+LEAD_SOURCE_ROUTER_ENABLED=false
+RESOLVE_SURVEY_ENABLED=true
+RESOLVE_SURVEY_INBOX_IDS=25
+RESOLVE_SURVEY_ASK_LEAD_SOURCE=true
+# LEAD_SOURCE_OPTIONS / LEAD_SOURCE_PROMPT_TEXT / LEAD_SOURCE_CONFIRM_TEXT are still used —
+# keep them set even though LEAD_SOURCE_ROUTER_ENABLED is false.
+LEAD_SOURCE_OPTIONS=فيسبوك=facebook|إنستجرام=instagram|يوتيوب=youtube|تيك توك=tiktok|جوجل=google|سناب شات=snapchat|ترشيح=referral|أخرى=other
+LEAD_SOURCE_PROMPT_TEXT=ممكن نعرف حضرتك عرفتنا منين؟\n\n{options}\n\nاكتب رقم الاختيار فقط.
+LEAD_SOURCE_CONFIRM_TEXT=شكرًا لتواصلك مع إنجوسوفت 🌟\nتم تسجيل بياناتك بنجاح. 🙏
+```
+
 ## Analytics
 
 > **Standalone reports view:** open `/?view=reports` for a clean, managers-only dashboard that shows just the **Analytics**, **Campaign Analytics**, and **Email Digest** tabs (no operations tabs). It loads full-screen from the app's own URL and uses the server-side Chatwoot connection, so it does not need to be embedded inside Chatwoot. Share that link (behind `OPS_PASSWORD`) with people who only need reports.

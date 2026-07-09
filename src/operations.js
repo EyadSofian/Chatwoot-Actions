@@ -1083,14 +1083,25 @@ export async function handleResolveSurveyWebhook(payload = {}, options = {}) {
       if (status !== "resolved") {
         return { ok: true, handled: false, skipped: true, reason: "resolve_survey_status_ignored", conversationId, inboxId, status };
       }
-      // Ask once per conversation — a re-resolve does not re-survey.
-      if (state === "awaiting_rating" || state === "rated") {
+      // Ask once per conversation — a re-resolve does not re-survey. Any survey stage
+      // already under way (source or rating) counts as already asked.
+      if (state === "awaiting_source" || state === "awaiting_rating" || state === "rated") {
         return { ok: true, handled: true, skipped: true, reason: "resolve_survey_already_sent", conversationId, inboxId };
       }
-      return sendResolveSurvey(client, conversation, config, { conversationId, inboxId, customAttributes });
+      return startResolveSurvey(client, conversation, config, { conversationId, inboxId, customAttributes });
     }
 
-    // message_created path: only meaningful while a rating is pending.
+    // message_created path. The survey runs in two stages: first the lead source (if
+    // this survey asks it), then the rating. Each stage releases an unrecognized reply
+    // back to the normal flow so a fresh customer question is never swallowed.
+    if (state === "awaiting_source") {
+      const choice = parseLeadSourceChoice(message?.content || payload?.content || "", config.leadSource.options);
+      if (!choice) {
+        return { ok: true, handled: false, skipped: true, reason: "resolve_survey_source_reply_not_recognized", conversationId, inboxId };
+      }
+      return captureResolveSurveySource(client, conversation, config, choice, { conversationId, inboxId, customAttributes });
+    }
+    // Only meaningful while a rating is pending.
     if (state !== "awaiting_rating") {
       return { ok: true, handled: false, skipped: true, reason: "resolve_survey_not_awaiting", conversationId, inboxId };
     }
@@ -1138,6 +1149,138 @@ async function sendResolveSurvey(client, conversation, config, { conversationId,
     agentName,
     ackMessageId,
     ratingMessageId: rating?.id || null
+  };
+}
+
+// Decide the first step of the post-resolution survey: ask the lead source ("how did
+// you hear about us") first when enabled and not already known, otherwise go straight
+// to the rating (the original behaviour). Both paths capture the responsible agent at
+// resolve time so the rating still names the right agent later.
+async function startResolveSurvey(client, conversation, config, ctx) {
+  if (config.askLeadSource && config.leadSource.options.length &&
+    !(await resolveSurveyLeadSourceAlreadyKnown(client, conversation, config, ctx.customAttributes))) {
+    return sendResolveSurveySourcePrompt(client, conversation, config, ctx);
+  }
+  return sendResolveSurvey(client, conversation, config, ctx);
+}
+
+// True when the lead source is already recorded — on the conversation, or (when
+// askOncePerContact) on the contact — so the survey skips the question and asks only
+// for the rating. Mirrors the "already collected" check the standalone router uses.
+async function resolveSurveyLeadSourceAlreadyKnown(client, conversation, config, customAttributes) {
+  const key = config.leadSource.attributeKey;
+  const onConversation = String(customAttributes[key] || customAttributes[LEAD_SOURCE_ATTRIBUTES.value] || "").trim();
+  if (onConversation) return true;
+  if (!config.leadSource.askOncePerContact) return false;
+  const contactId = getConversationContactId(conversation);
+  if (!contactId) return false;
+  const contact = await loadLeadSourceContact(client, contactId, conversation);
+  const attrs = getContactCustomAttributes(contact);
+  return Boolean(String(attrs[key] || attrs[LEAD_SOURCE_ATTRIBUTES.value] || "").trim());
+}
+
+// Send the lead-source question and park the survey in "awaiting_source". The
+// responsible agent (assignee at resolve time) is stored now so the rating that follows
+// still names them even after resolving clears the assignee.
+async function sendResolveSurveySourcePrompt(client, conversation, config, { conversationId, inboxId, customAttributes }) {
+  const assignee = getConversationAssignee(conversation);
+  const agentId = getConversationAssigneeId(conversation);
+  const agentName = getAgentName(assignee) || "";
+  const now = new Date().toISOString();
+
+  const prompt = await client.createMessage(conversationId, buildResolveSurveyMessage(buildLeadSourcePrompt(config.leadSource)));
+  const merged = {
+    ...customAttributes,
+    [RESOLVE_SURVEY_ATTRIBUTES.state]: "awaiting_source",
+    [RESOLVE_SURVEY_ATTRIBUTES.promptedAt]: now,
+    [RESOLVE_SURVEY_ATTRIBUTES.agentId]: agentId ? String(agentId) : "",
+    [RESOLVE_SURVEY_ATTRIBUTES.agentName]: agentName
+  };
+  await client.updateConversationCustomAttributes(conversationId, merged);
+
+  await auditDepartmentRouter("resolve_survey_source_prompted", {
+    conversationId, inboxId, agentId: agentId || null, agentName, messageId: prompt?.id || null
+  }, config.audit);
+  return {
+    ok: true,
+    handled: true,
+    action: "resolve_survey_source_prompted",
+    conversationId,
+    inboxId,
+    agentId: agentId || null,
+    agentName,
+    messageId: prompt?.id || null
+  };
+}
+
+// Persist the customer's lead-source choice (reusing the shared save + labelling), send
+// the confirmation, then chain into the rating question and park in "awaiting_rating".
+async function captureResolveSurveySource(client, conversation, config, choice, { conversationId, inboxId, customAttributes }) {
+  const contactId = getConversationContactId(conversation);
+  const contact = contactId
+    ? await loadLeadSourceContact(client, contactId, conversation)
+    : (getConversationContact(conversation) || { id: contactId });
+
+  const saved = await saveLeadSourceChoice(client, conversation, contact, choice, config.leadSource);
+
+  // Durable analytics fact: one lead source per contact (dedupeKey de-dupes a repeat
+  // answer). Powers the lead-source breakdown in Analytics, same as the standalone router.
+  await recordMetricEvent({
+    type: "lead_source",
+    conversationId: String(conversationId),
+    inboxId: inboxId != null ? String(inboxId) : "",
+    contactId: contactId ? String(contactId) : "",
+    value: choice.value,
+    label: choice.label,
+    at: new Date().toISOString(),
+    dedupeKey: `lead_source:${contactId}`
+  });
+
+  let confirmationMessageId = null;
+  if (config.leadSource.confirmText) {
+    const confirmation = await client.createMessage(conversationId, buildResolveSurveyMessage(config.leadSource.confirmText));
+    confirmationMessageId = confirmation?.id || null;
+  }
+
+  // Now ask for the rating, naming the agent captured when the survey started.
+  const agentId = customAttributes[RESOLVE_SURVEY_ATTRIBUTES.agentId] ||
+    (getConversationAssigneeId(conversation) ? String(getConversationAssigneeId(conversation)) : "");
+  const agentName = customAttributes[RESOLVE_SURVEY_ATTRIBUTES.agentName] ||
+    getAgentName(getConversationAssignee(conversation)) || "";
+  const ratingMessage = await client.createMessage(conversationId, buildResolveSurveyMessage(buildResolveSurveyRatingText(config, agentName)));
+
+  const now = new Date().toISOString();
+  // Merge on top of what saveLeadSourceChoice wrote so neither the lead-source record
+  // nor the survey state is lost — Chatwoot replaces custom_attributes wholesale on write.
+  const merged = {
+    ...customAttributes,
+    [config.leadSource.attributeKey]: choice.value,
+    [LEAD_SOURCE_ATTRIBUTES.value]: choice.value,
+    [LEAD_SOURCE_ATTRIBUTES.label]: choice.label,
+    [LEAD_SOURCE_ATTRIBUTES.answeredAt]: now,
+    [LEAD_SOURCE_ATTRIBUTES.collectedBy]: "customer",
+    [LEAD_SOURCE_ATTRIBUTES.state]: "answered",
+    [RESOLVE_SURVEY_ATTRIBUTES.state]: "awaiting_rating",
+    [RESOLVE_SURVEY_ATTRIBUTES.promptedAt]: now,
+    [RESOLVE_SURVEY_ATTRIBUTES.agentId]: agentId,
+    [RESOLVE_SURVEY_ATTRIBUTES.agentName]: agentName
+  };
+  await client.updateConversationCustomAttributes(conversationId, merged);
+
+  await auditDepartmentRouter("resolve_survey_source_collected", {
+    conversationId, inboxId, label: choice.label, value: choice.value,
+    labelErrors: saved.labelErrors, confirmationMessageId, ratingMessageId: ratingMessage?.id || null
+  }, config.audit);
+  return {
+    ok: true,
+    handled: true,
+    action: "resolve_survey_source_collected",
+    conversationId,
+    inboxId,
+    label: choice.label,
+    value: choice.value,
+    confirmationMessageId,
+    ratingMessageId: ratingMessage?.id || null
   };
 }
 
@@ -1938,6 +2081,13 @@ function buildResolveSurveyConfig(options = {}) {
       process.env.RESOLVE_SURVEY_THANKS_TEXT ??
       "شكرًا لتقييمك! 🌟 استلمنا تقييمك ({rating}/{max}) وهيساعدنا نطوّر خدمتنا."
     ),
+    // When on, the post-resolution survey asks "how did you hear about us" (lead source)
+    // FIRST, then chains into the rating once the customer answers. It reuses the whole
+    // LEAD_SOURCE_* content config (options, prompt, confirmation text, label colour,
+    // attribute key, ask-once-per-contact). Inert unless RESOLVE_SURVEY_ASK_LEAD_SOURCE
+    // is on, so the plain rating-only survey is completely unchanged by default.
+    askLeadSource: parseBooleanOption(options.askLeadSource, process.env.RESOLVE_SURVEY_ASK_LEAD_SOURCE, false),
+    leadSource: buildLeadSourceRouterConfig(options.leadSource || {}),
     audit: options.audit !== false
   };
 }
