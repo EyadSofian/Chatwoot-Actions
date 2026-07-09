@@ -209,6 +209,34 @@ LEAD_SOURCE_CONFIRM_TEXT=شكرًا لتواصلك مع إنجوسوفت 🌟\n�
 
 Labelling is best-effort: if a label still can't be created or applied, the router records the answer in the `lead_source` custom attribute and thanks the customer anyway — the reply is never lost to a label error.
 
+## Post-Resolution Rating Survey (CSAT)
+
+The Resolve Survey asks for a satisfaction rating **after a conversation is resolved** in selected inboxes (instead of at the start of the conversation). When a conversation is resolved, it sends two messages:
+
+1. An acknowledgement (`RESOLVE_SURVEY_ACK_TEXT`, e.g. "تم تسجيل بياناتك بنجاح ✅").
+2. A rating request (`RESOLVE_SURVEY_RATING_TEXT`) that names the responsible agent and asks for a score from `min` to `max`.
+
+It then waits for the customer's reply. The **first number** in the reply (Arabic or ASCII digits) within the scale is stored on the conversation as the `csat_rating` custom attribute, along with the responsible agent (`resolve_survey_agent_id` / `resolve_survey_agent_name`, captured at resolve time), and the customer is thanked (`RESOLVE_SURVEY_THANKS_TEXT`). A non-numeric reply is left alone and flows to the normal handling, so a fresh question is never swallowed by the survey. Each conversation is surveyed once.
+
+Railway example (Arabic, 1–5 scale):
+
+```text
+RESOLVE_SURVEY_ENABLED=true
+RESOLVE_SURVEY_INBOX_IDS=25
+RESOLVE_SURVEY_MIN_RATING=1
+RESOLVE_SURVEY_MAX_RATING=5
+RESOLVE_SURVEY_ATTRIBUTE_KEY=csat_rating
+RESOLVE_SURVEY_ACK_TEXT=تم تسجيل بياناتك بنجاح ✅
+RESOLVE_SURVEY_RATING_TEXT=قيّم تجربتك مع خدمتنا{agent} من {min} إلى {max}:\n{max} = ممتاز، {min} = سيئة جدًا\nاكتب رقم من {min} إلى {max} فقط.
+RESOLVE_SURVEY_AGENT_TEMPLATE= ومع الموظف المسؤول ({agent})
+RESOLVE_SURVEY_THANKS_TEXT=شكرًا لتقييمك! 🌟 استلمنا تقييمك ({rating}/{max}) وهيساعدنا نطوّر خدمتنا.
+
+# Turn off the start-of-conversation lead-source question on this inbox:
+LEAD_SOURCE_ROUTER_ENABLED=false
+```
+
+All texts support `\n` for line breaks. Placeholders: `{min}`/`{max}` (scale bounds), `{agent}` in the rating text (expands to `RESOLVE_SURVEY_AGENT_TEMPLATE` with the agent name, or nothing when the conversation was unassigned), and `{rating}`/`{max}` in the thanks text. Set `RESOLVE_SURVEY_ACK_TEXT=` or `RESOLVE_SURVEY_THANKS_TEXT=` (empty) to skip either message. Use a **dedicated inbox** for the survey — one that is not also a Fahd/Botpress bot inbox — so the rating reply is captured by the survey and not forwarded to the bot.
+
 ## Department Router
 
 The Department Router implements the trainee WhatsApp flow from the operations playbook. It asks customers to choose Sales, Trainee Support, or Complaints, then routes only inside the configured Chatwoot teams/inbox.

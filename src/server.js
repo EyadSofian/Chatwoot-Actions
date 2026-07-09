@@ -27,6 +27,7 @@ import {
   handleDepartmentRouterWebhook,
   handleLeadSourceRouterWebhook,
   handleReopenRouterWebhook,
+  handleResolveSurveyWebhook,
   handleResolvedReentryReset,
   makeClient,
   parsePhoneAssignInput,
@@ -299,8 +300,14 @@ async function route(req, res) {
       router = { ok: true, reason: "forwarded_to_botpress", skippedRouters: true };
     } else {
       try {
-        const leadSourceRouter = await handleLeadSourceRouterWebhook(body);
-        if (leadSourceRouter.handled) {
+        // Post-resolution CSAT survey runs first for its inboxes: on resolve it asks,
+        // and it must capture the customer's rating reply (a bare number) before the
+        // other handlers see it. A non-rating reply falls through untouched.
+        const resolveSurvey = await handleResolveSurveyWebhook(body);
+        const leadSourceRouter = resolveSurvey.handled ? null : await handleLeadSourceRouterWebhook(body);
+        if (resolveSurvey.handled) {
+          router = resolveSurvey;
+        } else if (leadSourceRouter.handled) {
           router = leadSourceRouter;
         } else {
           // Legacy department/reopen routers are retired. Fahd (Botpress) owns all

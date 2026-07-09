@@ -37,6 +37,14 @@ const LEAD_SOURCE_ATTRIBUTES = {
   label: "lead_source_label",
   collectedBy: "lead_source_collected_by"
 };
+const RESOLVE_SURVEY_ATTRIBUTES = {
+  state: "resolve_survey_state",
+  promptedAt: "resolve_survey_prompted_at",
+  ratedAt: "resolve_survey_rated_at",
+  rating: "resolve_survey_rating",
+  agentId: "resolve_survey_agent_id",
+  agentName: "resolve_survey_agent_name"
+};
 
 export function makeClient(connection) {
   return new ChatwootClient(connection || {});
@@ -795,6 +803,179 @@ export async function handleLeadSourceRouterWebhook(payload = {}, options = {}) 
   });
 }
 
+// Post-resolution CSAT survey. When a conversation in an enabled inbox is resolved,
+// send an acknowledgement plus a rating request (1..max) tied to the responsible
+// agent. The customer's next incoming reply is parsed for a rating and stored on the
+// conversation (with the agent it belongs to); a non-numeric reply is released to the
+// normal flow so a fresh question is never swallowed by the survey.
+export async function handleResolveSurveyWebhook(payload = {}, options = {}) {
+  const config = buildResolveSurveyConfig(options);
+  if (!config.enabled) return { ok: true, handled: false, skipped: true, reason: "resolve_survey_disabled" };
+
+  const eventName = String(payload.event || payload.name || "").toLowerCase();
+  const message = getWebhookMessage(payload);
+  const conversationId = getWebhookConversationId(payload, message) ||
+    (eventName.startsWith("conversation_") ? payload?.id : null);
+  if (!conversationId) return { ok: true, handled: false, skipped: true, reason: "resolve_survey_missing_conversation_id" };
+
+  const isStatusChange = eventName.includes("conversation_status_changed");
+  const isMessage = eventName.includes("message_created");
+  if (!isStatusChange && !isMessage) {
+    return { ok: true, handled: false, skipped: true, reason: "resolve_survey_event_ignored", conversationId };
+  }
+  // Only an incoming customer message can carry a rating reply.
+  if (isMessage && !isIncomingWebhookMessage(payload, message)) {
+    return { ok: true, handled: false, skipped: true, reason: "resolve_survey_event_ignored", conversationId };
+  }
+
+  return withDepartmentRouterLock(`resolve_survey:${conversationId}`, async () => {
+    const client = makeClient(options.connection || {});
+    const conversation = await loadDepartmentConversation(client, payload, message, conversationId, eventName);
+    const inboxId = getConversationInboxId(conversation);
+    if (config.inboxIds.length && !config.inboxIds.includes(String(inboxId))) {
+      return { ok: true, handled: false, skipped: true, reason: "resolve_survey_inbox_not_enabled", conversationId, inboxId };
+    }
+    if (config.skipCampaigns && hasAnyCampaignMarker(conversation, payload, message)) {
+      return { ok: true, handled: false, skipped: true, reason: "resolve_survey_campaign_skipped", conversationId, inboxId };
+    }
+
+    const customAttributes = getConversationCustomAttributes(conversation);
+    const state = String(customAttributes[RESOLVE_SURVEY_ATTRIBUTES.state] || "").toLowerCase();
+
+    if (isStatusChange) {
+      const status = getWebhookConversationStatus(payload, conversation);
+      if (status !== "resolved") {
+        return { ok: true, handled: false, skipped: true, reason: "resolve_survey_status_ignored", conversationId, inboxId, status };
+      }
+      // Ask once per conversation — a re-resolve does not re-survey.
+      if (state === "awaiting_rating" || state === "rated") {
+        return { ok: true, handled: true, skipped: true, reason: "resolve_survey_already_sent", conversationId, inboxId };
+      }
+      return sendResolveSurvey(client, conversation, config, { conversationId, inboxId, customAttributes });
+    }
+
+    // message_created path: only meaningful while a rating is pending.
+    if (state !== "awaiting_rating") {
+      return { ok: true, handled: false, skipped: true, reason: "resolve_survey_not_awaiting", conversationId, inboxId };
+    }
+    const rating = parseResolveSurveyRating(message?.content || payload?.content || "", config.minRating, config.maxRating);
+    if (rating == null) {
+      // Not a rating — hand the message back to the normal flow.
+      return { ok: true, handled: false, skipped: true, reason: "resolve_survey_reply_not_rating", conversationId, inboxId };
+    }
+    return captureResolveSurveyRating(client, conversation, config, rating, { conversationId, inboxId, customAttributes });
+  });
+}
+
+async function sendResolveSurvey(client, conversation, config, { conversationId, inboxId, customAttributes }) {
+  const assignee = getConversationAssignee(conversation);
+  const agentId = getConversationAssigneeId(conversation);
+  const agentName = getAgentName(assignee) || "";
+  const now = new Date().toISOString();
+
+  let ackMessageId = null;
+  if (config.ackText) {
+    const ack = await client.createMessage(conversationId, buildResolveSurveyMessage(config.ackText));
+    ackMessageId = ack?.id || null;
+  }
+  const rating = await client.createMessage(conversationId, buildResolveSurveyMessage(buildResolveSurveyRatingText(config, agentName)));
+
+  const merged = {
+    ...customAttributes,
+    [RESOLVE_SURVEY_ATTRIBUTES.state]: "awaiting_rating",
+    [RESOLVE_SURVEY_ATTRIBUTES.promptedAt]: now,
+    [RESOLVE_SURVEY_ATTRIBUTES.agentId]: agentId ? String(agentId) : "",
+    [RESOLVE_SURVEY_ATTRIBUTES.agentName]: agentName
+  };
+  await client.updateConversationCustomAttributes(conversationId, merged);
+
+  await auditDepartmentRouter("resolve_survey_prompted", {
+    conversationId, inboxId, agentId: agentId || null, agentName, ackMessageId, ratingMessageId: rating?.id || null
+  }, config.audit);
+  return {
+    ok: true,
+    handled: true,
+    action: "resolve_survey_prompted",
+    conversationId,
+    inboxId,
+    agentId: agentId || null,
+    agentName,
+    ackMessageId,
+    ratingMessageId: rating?.id || null
+  };
+}
+
+async function captureResolveSurveyRating(client, conversation, config, rating, { conversationId, inboxId, customAttributes }) {
+  const now = new Date().toISOString();
+  const agentId = customAttributes[RESOLVE_SURVEY_ATTRIBUTES.agentId] ||
+    (getConversationAssigneeId(conversation) ? String(getConversationAssigneeId(conversation)) : "");
+  const agentName = customAttributes[RESOLVE_SURVEY_ATTRIBUTES.agentName] ||
+    getAgentName(getConversationAssignee(conversation)) || "";
+
+  const merged = {
+    ...customAttributes,
+    [config.attributeKey]: rating,
+    [RESOLVE_SURVEY_ATTRIBUTES.rating]: rating,
+    [RESOLVE_SURVEY_ATTRIBUTES.state]: "rated",
+    [RESOLVE_SURVEY_ATTRIBUTES.ratedAt]: now,
+    [RESOLVE_SURVEY_ATTRIBUTES.agentId]: agentId,
+    [RESOLVE_SURVEY_ATTRIBUTES.agentName]: agentName
+  };
+  await client.updateConversationCustomAttributes(conversationId, merged);
+
+  let thanksMessageId = null;
+  if (config.thanksText) {
+    const content = config.thanksText
+      .replace(/\{rating\}/g, String(rating))
+      .replace(/\{max\}/g, String(config.maxRating));
+    const thanks = await client.createMessage(conversationId, buildResolveSurveyMessage(content));
+    thanksMessageId = thanks?.id || null;
+  }
+
+  await auditDepartmentRouter("resolve_survey_rated", {
+    conversationId, inboxId, rating, agentId: agentId || null, agentName, thanksMessageId
+  }, config.audit);
+  return {
+    ok: true,
+    handled: true,
+    action: "resolve_survey_rated",
+    conversationId,
+    inboxId,
+    rating,
+    agentId: agentId || null,
+    agentName,
+    thanksMessageId
+  };
+}
+
+function buildResolveSurveyMessage(content) {
+  return {
+    content,
+    message_type: "outgoing",
+    private: false,
+    content_type: "text",
+    content_attributes: {}
+  };
+}
+
+function buildResolveSurveyRatingText(config, agentName) {
+  const agentSegment = agentName ? config.agentTemplate.replace(/\{agent\}/g, agentName) : "";
+  return config.ratingText
+    .replace(/\{agent\}/g, agentSegment)
+    .replace(/\{min\}/g, String(config.minRating))
+    .replace(/\{max\}/g, String(config.maxRating));
+}
+
+function parseResolveSurveyRating(content, minRating, maxRating) {
+  const normalized = normalizeLeadSourceText(content);
+  if (!normalized) return null;
+  const match = normalized.match(/\d+/);
+  if (!match) return null;
+  const value = Number(match[0]);
+  if (!Number.isInteger(value) || value < minRating || value > maxRating) return null;
+  return value;
+}
+
 export async function handleDepartmentRouterWebhook(payload = {}, options = {}) {
   const config = buildDepartmentRouterConfig({
     ...await loadSavedRouterOptions("department", options),
@@ -1477,6 +1658,37 @@ function buildLeadSourceRouterConfig(options = {}) {
     // so the survey stays out of it.
     newConversationsOnly: parseBooleanOption(options.newConversationsOnly, process.env.LEAD_SOURCE_NEW_CONVERSATIONS_ONLY, true),
     skipCampaigns: parseBooleanOption(options.skipCampaigns, process.env.LEAD_SOURCE_SKIP_CAMPAIGNS, true),
+    audit: options.audit !== false
+  };
+}
+
+function buildResolveSurveyConfig(options = {}) {
+  const minRating = Math.max(1, Math.round(numberOption(options.minRating, process.env.RESOLVE_SURVEY_MIN_RATING, 1)));
+  const maxRating = Math.max(minRating, Math.round(numberOption(options.maxRating, process.env.RESOLVE_SURVEY_MAX_RATING, 5)));
+  return {
+    enabled: parseBooleanOption(options.enabled, process.env.RESOLVE_SURVEY_ENABLED, false),
+    inboxIds: parseListOption(options.inboxIds, process.env.RESOLVE_SURVEY_INBOX_IDS, []).map(String),
+    skipCampaigns: parseBooleanOption(options.skipCampaigns, process.env.RESOLVE_SURVEY_SKIP_CAMPAIGNS, true),
+    minRating,
+    maxRating,
+    attributeKey: String(options.attributeKey ?? process.env.RESOLVE_SURVEY_ATTRIBUTE_KEY ?? "csat_rating").trim() || "csat_rating",
+    // Message 1: confirm the request is logged/closed.
+    ackText: unescapeEnvText(options.ackText ?? process.env.RESOLVE_SURVEY_ACK_TEXT ?? "تم تسجيل بياناتك بنجاح ✅"),
+    // Message 2: the rating request. {agent} expands to the agentTemplate (or nothing
+    // when unassigned); {min}/{max} expand to the scale bounds.
+    ratingText: unescapeEnvText(
+      options.ratingText ??
+      process.env.RESOLVE_SURVEY_RATING_TEXT ??
+      "قيّم تجربتك مع خدمتنا{agent} من {min} إلى {max}:\n{max} = ممتاز، {min} = سيئة جدًا\nاكتب رقم من {min} إلى {max} فقط."
+    ),
+    // Injected into {agent} when there is a responsible agent; {agent} here is the name.
+    agentTemplate: unescapeEnvText(options.agentTemplate ?? process.env.RESOLVE_SURVEY_AGENT_TEMPLATE ?? " ومع الموظف المسؤول ({agent})"),
+    // Sent after a rating is captured. {rating}/{max} expand to the score. Empty to skip.
+    thanksText: unescapeEnvText(
+      options.thanksText ??
+      process.env.RESOLVE_SURVEY_THANKS_TEXT ??
+      "شكرًا لتقييمك! 🌟 استلمنا تقييمك ({rating}/{max}) وهيساعدنا نطوّر خدمتنا."
+    ),
     audit: options.audit !== false
   };
 }
