@@ -1096,10 +1096,16 @@ export async function handleResolveSurveyWebhook(payload = {}, options = {}) {
     // back to the normal flow so a fresh customer question is never swallowed.
     if (state === "awaiting_source") {
       const choice = parseLeadSourceChoice(message?.content || payload?.content || "", config.leadSource.options);
-      if (!choice) {
-        return { ok: true, handled: false, skipped: true, reason: "resolve_survey_source_reply_not_recognized", conversationId, inboxId };
+      if (choice) {
+        return captureResolveSurveySource(client, conversation, config, choice, { conversationId, inboxId, customAttributes });
       }
-      return captureResolveSurveySource(client, conversation, config, choice, { conversationId, inboxId, customAttributes });
+      // The reply isn't a source choice. If the source is optional (default), treat it
+      // as a skip and ask for the rating on its own so a score is still collected.
+      // Otherwise keep waiting and release the reply to the normal flow.
+      if (config.sourceOptional) {
+        return sendResolveSurveyRatingOnly(client, conversation, config, { conversationId, inboxId, customAttributes });
+      }
+      return { ok: true, handled: false, skipped: true, reason: "resolve_survey_source_reply_not_recognized", conversationId, inboxId };
     }
     // Only meaningful while a rating is pending.
     if (state !== "awaiting_rating") {
@@ -1280,6 +1286,41 @@ async function captureResolveSurveySource(client, conversation, config, choice, 
     label: choice.label,
     value: choice.value,
     confirmationMessageId,
+    ratingMessageId: ratingMessage?.id || null
+  };
+}
+
+// The customer skipped the lead-source question (their reply wasn't a valid choice).
+// Ask for the rating on its own — naming the agent captured when the survey started —
+// and park in "awaiting_rating". No acknowledgement: the survey is already mid-flow.
+async function sendResolveSurveyRatingOnly(client, conversation, config, { conversationId, inboxId, customAttributes }) {
+  const agentId = customAttributes[RESOLVE_SURVEY_ATTRIBUTES.agentId] ||
+    (getConversationAssigneeId(conversation) ? String(getConversationAssigneeId(conversation)) : "");
+  const agentName = customAttributes[RESOLVE_SURVEY_ATTRIBUTES.agentName] ||
+    getAgentName(getConversationAssignee(conversation)) || "";
+  const now = new Date().toISOString();
+
+  const ratingMessage = await client.createMessage(conversationId, buildResolveSurveyMessage(buildResolveSurveyRatingText(config, agentName)));
+  const merged = {
+    ...customAttributes,
+    [RESOLVE_SURVEY_ATTRIBUTES.state]: "awaiting_rating",
+    [RESOLVE_SURVEY_ATTRIBUTES.promptedAt]: now,
+    [RESOLVE_SURVEY_ATTRIBUTES.agentId]: agentId,
+    [RESOLVE_SURVEY_ATTRIBUTES.agentName]: agentName
+  };
+  await client.updateConversationCustomAttributes(conversationId, merged);
+
+  await auditDepartmentRouter("resolve_survey_source_skipped", {
+    conversationId, inboxId, agentId: agentId || null, agentName, ratingMessageId: ratingMessage?.id || null
+  }, config.audit);
+  return {
+    ok: true,
+    handled: true,
+    action: "resolve_survey_source_skipped",
+    conversationId,
+    inboxId,
+    agentId: agentId || null,
+    agentName,
     ratingMessageId: ratingMessage?.id || null
   };
 }
@@ -2087,6 +2128,10 @@ function buildResolveSurveyConfig(options = {}) {
     // attribute key, ask-once-per-contact). Inert unless RESOLVE_SURVEY_ASK_LEAD_SOURCE
     // is on, so the plain rating-only survey is completely unchanged by default.
     askLeadSource: parseBooleanOption(options.askLeadSource, process.env.RESOLVE_SURVEY_ASK_LEAD_SOURCE, false),
+    // When the customer's reply to the lead-source question isn't a recognized choice,
+    // treat it as a skip and ask for the rating on its own (default). Set false to keep
+    // waiting for a valid source and release the reply to the normal flow instead.
+    sourceOptional: parseBooleanOption(options.sourceOptional, process.env.RESOLVE_SURVEY_SOURCE_OPTIONAL, true),
     leadSource: buildLeadSourceRouterConfig(options.leadSource || {}),
     audit: options.audit !== false
   };

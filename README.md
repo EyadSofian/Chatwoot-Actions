@@ -246,7 +246,9 @@ Set `RESOLVE_SURVEY_ASK_LEAD_SOURCE=true` to run the lead-source question ("how 
 3. Then immediately send the rating request (`RESOLVE_SURVEY_RATING_TEXT`).
 4. When the customer replies with a number, store the `csat_rating` and thank them.
 
-This **reuses the whole `LEAD_SOURCE_*` content config** (options, prompt, confirmation, label colour, attribute key) — you do not reconfigure the choices. The only difference is timing: the question is asked after resolve instead of at the start. If the customer already gave their source before (respecting `LEAD_SOURCE_ASK_ONCE_PER_CONTACT`, default on), the survey skips straight to the rating. An unrecognized reply at either step is released to the normal flow, so a fresh question is never swallowed.
+This **reuses the whole `LEAD_SOURCE_*` content config** (options, prompt, confirmation, label colour, attribute key) — you do not reconfigure the choices. The only difference is timing: the question is asked after resolve instead of at the start. If the customer already gave their source before (respecting `LEAD_SOURCE_ASK_ONCE_PER_CONTACT`, default on), the survey skips straight to the rating.
+
+If the customer replies to the source question with something that isn't a choice, it is treated as a **skip**: the rating is asked on its own so a score is still collected (`RESOLVE_SURVEY_SOURCE_OPTIONAL`, default on — set it to `false` to instead keep waiting for a valid source and release the reply to the normal flow). An unrecognized reply to the *rating* question is always released to the normal flow, so a fresh question is never swallowed.
 
 To move the lead-source question entirely to after resolve, turn the start-of-conversation router off and the combined survey on:
 
@@ -255,6 +257,8 @@ LEAD_SOURCE_ROUTER_ENABLED=false
 RESOLVE_SURVEY_ENABLED=true
 RESOLVE_SURVEY_INBOX_IDS=25
 RESOLVE_SURVEY_ASK_LEAD_SOURCE=true
+# If the customer doesn't pick a source, skip it and still ask for the rating:
+RESOLVE_SURVEY_SOURCE_OPTIONAL=true
 # LEAD_SOURCE_OPTIONS / LEAD_SOURCE_PROMPT_TEXT / LEAD_SOURCE_CONFIRM_TEXT are still used —
 # keep them set even though LEAD_SOURCE_ROUTER_ENABLED is false.
 LEAD_SOURCE_OPTIONS=فيسبوك=facebook|إنستجرام=instagram|يوتيوب=youtube|تيك توك=tiktok|جوجل=google|سناب شات=snapchat|ترشيح=referral|أخرى=other
