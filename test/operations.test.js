@@ -1359,6 +1359,168 @@ test("handleResolveSurveyWebhook asks for a rating on resolve and records the re
   }
 });
 
+test("handleResolveSurveyWebhook skips the survey when the assignee is not in RESOLVE_SURVEY_AGENT_IDS", async () => {
+  const messages = [];
+  let customAttributesBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "resolved",
+        inbox_id: 25,
+        custom_attributes: {},
+        meta: { sender: { id: 10, name: "Customer" }, assignee: { id: 20, name: "Someone Else" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 700 + messages.length }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleResolveSurveyWebhook(resolveStatusPayload("resolved"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      agentIds: ["7", "9", "15"],
+      audit: false
+    });
+
+    assert.equal(result.handled, false);
+    assert.equal(result.skipped, true);
+    assert.equal(result.reason, "resolve_survey_agent_not_allowed");
+    assert.equal(result.agentId, 20);
+    // No survey message is sent and no survey state is written for a blocked assignee.
+    assert.deepEqual(messages, []);
+    assert.equal(customAttributesBody, null);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleResolveSurveyWebhook skips the survey when the resolved conversation is unassigned and RESOLVE_SURVEY_AGENT_IDS is set", async () => {
+  const messages = [];
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "resolved",
+        inbox_id: 25,
+        custom_attributes: {},
+        meta: { sender: { id: 10, name: "Customer" }, assignee: null }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 700 + messages.length }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleResolveSurveyWebhook(resolveStatusPayload("resolved"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      agentIds: ["7", "9", "15"],
+      audit: false
+    });
+
+    assert.equal(result.reason, "resolve_survey_agent_not_allowed");
+    assert.deepEqual(messages, []);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("handleResolveSurveyWebhook sends the survey when the assignee is one of RESOLVE_SURVEY_AGENT_IDS", async () => {
+  const messages = [];
+  let customAttributesBody = null;
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url, "http://127.0.0.1");
+    res.setHeader("content-type", "application/json; charset=utf-8");
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33" && req.method === "GET") {
+      res.end(JSON.stringify({
+        id: 33,
+        status: "resolved",
+        inbox_id: 25,
+        custom_attributes: {},
+        meta: { sender: { id: 10, name: "Customer" }, assignee: { id: 9, name: "Shimaa Mohamed" } }
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/messages" && req.method === "POST") {
+      messages.push(await readRequestJson(req));
+      res.end(JSON.stringify({ id: 700 + messages.length }));
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/1/conversations/33/custom_attributes" && req.method === "POST") {
+      customAttributesBody = await readRequestJson(req);
+      res.end(JSON.stringify({ custom_attributes: customAttributesBody.custom_attributes }));
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: "not found" }));
+  });
+
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const result = await handleResolveSurveyWebhook(resolveStatusPayload("resolved"), {
+      connection: { baseUrl: `http://127.0.0.1:${port}`, accountId: "1", apiToken: "test-token" },
+      enabled: true,
+      inboxIds: ["25"],
+      agentIds: ["7", "9", "15"],
+      ackText: "",
+      ratingText: "قيّم خدمتنا{agent} من {min} إلى {max}",
+      agentTemplate: " ومع الموظف ({agent})",
+      audit: false
+    });
+
+    assert.equal(result.action, "resolve_survey_prompted");
+    assert.equal(result.agentId, 9);
+    assert.equal(result.agentName, "Shimaa Mohamed");
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].content, "قيّم خدمتنا ومع الموظف (Shimaa Mohamed) من 1 إلى 5");
+    assert.equal(customAttributesBody.custom_attributes.resolve_survey_state, "awaiting_rating");
+    assert.equal(customAttributesBody.custom_attributes.resolve_survey_agent_id, "9");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("handleResolveSurveyWebhook stores the customer's rating reply and thanks them", async () => {
   let customAttributesBody = null;
   const messages = [];

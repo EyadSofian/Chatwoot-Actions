@@ -1158,11 +1158,43 @@ async function sendResolveSurvey(client, conversation, config, { conversationId,
   };
 }
 
+// True when the survey may run for this conversation's assignee. With no
+// RESOLVE_SURVEY_AGENT_IDS allow-list the survey is unrestricted (original behaviour);
+// with one, only a conversation assigned (at resolve time) to a listed agent qualifies —
+// an unassigned conversation never does, so the survey messages go only to conversations
+// handled by those specific agents.
+function resolveSurveyAgentAllowed(conversation, config) {
+  if (!config.agentIds.length) return true;
+  const agentId = getConversationAssigneeId(conversation);
+  if (!agentId) return false;
+  return config.agentIds.includes(String(agentId));
+}
+
 // Decide the first step of the post-resolution survey: ask the lead source ("how did
 // you hear about us") first when enabled and not already known, otherwise go straight
 // to the rating (the original behaviour). Both paths capture the responsible agent at
 // resolve time so the rating still names the right agent later.
 async function startResolveSurvey(client, conversation, config, ctx) {
+  // Only survey conversations whose assignee at resolve time is one of the allowed
+  // agents (RESOLVE_SURVEY_AGENT_IDS). Anyone else — or an unassigned conversation — is
+  // skipped here, before any survey message (source question or rating) is ever sent.
+  // Continuation stages are gated by the survey state, which is never written on this
+  // path, so a blocked conversation stays entirely out of the survey.
+  if (!resolveSurveyAgentAllowed(conversation, config)) {
+    const agentId = getConversationAssigneeId(conversation);
+    await auditDepartmentRouter("resolve_survey_agent_not_allowed", {
+      conversationId: ctx.conversationId, inboxId: ctx.inboxId, agentId: agentId || null
+    }, config.audit);
+    return {
+      ok: true,
+      handled: false,
+      skipped: true,
+      reason: "resolve_survey_agent_not_allowed",
+      conversationId: ctx.conversationId,
+      inboxId: ctx.inboxId,
+      agentId: agentId || null
+    };
+  }
   if (config.askLeadSource && config.leadSource.options.length &&
     !(await resolveSurveyLeadSourceAlreadyKnown(client, conversation, config, ctx.customAttributes))) {
     return sendResolveSurveySourcePrompt(client, conversation, config, ctx);
@@ -2101,6 +2133,12 @@ function buildResolveSurveyConfig(options = {}) {
   return {
     enabled: parseBooleanOption(options.enabled, process.env.RESOLVE_SURVEY_ENABLED, false),
     inboxIds: parseListOption(options.inboxIds, process.env.RESOLVE_SURVEY_INBOX_IDS, []).map(String),
+    // Restrict the whole post-resolution survey (the "how did you hear about us"
+    // question and the rating) to conversations whose assignee at resolve time is one
+    // of these agent IDs. Empty (default) = no restriction. When set, a conversation
+    // assigned to anyone else — or left unassigned — is skipped and no survey message
+    // is sent to the customer.
+    agentIds: parseListOption(options.agentIds, process.env.RESOLVE_SURVEY_AGENT_IDS, []).map(String),
     skipCampaigns: parseBooleanOption(options.skipCampaigns, process.env.RESOLVE_SURVEY_SKIP_CAMPAIGNS, true),
     minRating,
     maxRating,

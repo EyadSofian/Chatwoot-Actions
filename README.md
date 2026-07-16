@@ -237,6 +237,17 @@ LEAD_SOURCE_ROUTER_ENABLED=false
 
 All texts support `\n` for line breaks. Placeholders: `{min}`/`{max}` (scale bounds), `{agent}` in the rating text (expands to `RESOLVE_SURVEY_AGENT_TEMPLATE` with the agent name, or nothing when the conversation was unassigned), and `{rating}`/`{max}` in the thanks text. Set `RESOLVE_SURVEY_ACK_TEXT=` or `RESOLVE_SURVEY_THANKS_TEXT=` (empty) to skip either message. Use a **dedicated inbox** for the survey — one that is not also a Fahd/Botpress bot inbox — so the rating reply is captured by the survey and not forwarded to the bot.
 
+### Restrict the survey to specific agents
+
+Set `RESOLVE_SURVEY_AGENT_IDS` to a comma-separated list of agent IDs to send the survey **only** when the conversation is assigned, at resolve time, to one of those agents. The whole survey is gated — both the "how did you hear about us?" question and the rating — so a conversation handled by anyone else, or left unassigned, is skipped and receives no survey message. Leave it empty (the default) for no restriction, surveying every resolved conversation in the enabled inboxes.
+
+```text
+# Only survey conversations assigned to Merna (7), Shimaa (9), or Mohamed Hesham (15):
+RESOLVE_SURVEY_AGENT_IDS=7,9,15
+```
+
+The gate runs at resolve time, when the assignee is still attached. Once the survey has started, the customer's follow-up replies (the source choice and the rating number) are always accepted, even though resolving clears the assignee — the restriction decides whether to *begin* the survey, never whether to accept an in-flight reply.
+
 ### Ask the lead source *after* resolve, then rate
 
 Set `RESOLVE_SURVEY_ASK_LEAD_SOURCE=true` to run the lead-source question ("how did you hear about us?") and the rating as **one survey after the conversation is resolved**. The order is:
