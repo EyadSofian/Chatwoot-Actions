@@ -466,6 +466,7 @@ test("forwardIncomingToBotpress releases a broadcast conversation via the durabl
     const { forwardIncomingToBotpress } = await import(`../src/botpressBridge.js?marker-release=${Date.now()}`);
     const result = await forwardIncomingToBotpress({
       id: "message-68426",
+      created_at: "2026-06-28T16:19:00Z",
       message_type: "incoming",
       private: false,
       content: "انا دافع الدورات حضوري",
