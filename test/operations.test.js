@@ -3949,7 +3949,7 @@ test("handleDepartmentRouterWebhook never prompts or routes broadcast conversati
         contact_id: 10,
         // The external campaign uploader marks conversations with custom
         // attributes instead of a native campaign_id.
-        custom_attributes: { api_campaign_label: "june-promo", api_sent_june_promo_welcome: "2026-06-14T00:00:00Z" },
+        custom_attributes: { api_campaign_label: "june-promo", api_sent_june_promo_welcome: new Date().toISOString() },
         meta: { assignee: { id: 4, name: "Old Agent" } }
       }));
       return;

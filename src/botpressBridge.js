@@ -1,5 +1,6 @@
 import { conversationHasBotReleaseMarker, conversationHasResolveActivity, isBroadcastConversation, makeClient, wasResolvedReopenedWithoutAgentReply } from "./operations.js";
 import { transcribeAudioUrl, firstAudioAttachmentUrl, voiceTranscriptionEnabled } from "./voiceTranscription.js";
+import { checkBotpressIncomingEligibility, checkBotpressWriteEligibility } from "./botpressEligibility.js";
 
 const BOTPRESS_WEBHOOK_URL = process.env.BOTPRESS_WEBHOOK_URL || "";
 const BOTPRESS_PAT = process.env.BOTPRESS_PAT || "";
@@ -68,9 +69,9 @@ function getSenderPhone(body = {}) {
   ).trim();
 }
 
-async function fillFromApi(convId, g) {
+async function fillFromApi(convId, g, client) {
   try {
-    const r = await makeClient({}).conversationDetails(convId);
+    const r = await client.conversationDetails(convId);
     const c = r?.payload || r || {};
     return {
       ...g,
@@ -87,6 +88,10 @@ async function fillFromApi(convId, g) {
 
 export async function forwardIncomingToBotpress(body = {}) {
   if (!BOTPRESS_WEBHOOK_URL) return { ok: true, skipped: true, reason: "no_botpress_url" };
+  const event = String(body.event || body.name || "").toLowerCase();
+  if (event && event !== "message_created") {
+    return { ok: true, skipped: true, reason: "not_message_created" };
+  }
   if (body.message_type !== "incoming") return { ok: true, skipped: true, reason: "not_incoming" };
   if (body.private === true) return { ok: true, skipped: true, reason: "private_note" };
   const audioUrl = firstAudioAttachmentUrl(body);
@@ -105,7 +110,18 @@ export async function forwardIncomingToBotpress(body = {}) {
     return { ok: true, skipped: true, reason: "inbox", inboxId: g.inboxId };
   }
 
-  g = await fillFromApi(convId, g);
+  let client;
+  try {
+    client = makeClient({});
+  } catch {
+    return { ok: true, skipped: true, reason: "conversation_unverified", conversationId: convId };
+  }
+  g = await fillFromApi(convId, g, client);
+  if (!g.raw) return { ok: true, skipped: true, reason: "conversation_unverified", conversationId: convId };
+  const eligibility = await checkBotpressIncomingEligibility(client, convId, g.raw, body);
+  if (!eligibility.allowed) {
+    return { ok: true, skipped: true, reason: eligibility.reason, conversationId: convId };
+  }
 
   // Broadcast/campaign conversations are handled by the team, not Fahd. Skip
   // them even when an automation stamped needs-bot on every new conversation.
@@ -265,6 +281,17 @@ export async function handleBotpressResponse(body = {}) {
   if (!texts.length) return { ok: true, skipped: true, reason: "no_text" };
 
   const client = makeClient({});
+  let conversation;
+  try {
+    const response = await client.conversationDetails(convId);
+    conversation = response?.payload || response;
+  } catch {
+    return { ok: true, skipped: true, reason: "conversation_unverified", conversationId: convId };
+  }
+  const eligibility = await checkBotpressWriteEligibility(client, convId, conversation);
+  if (!eligibility.allowed) {
+    return { ok: true, skipped: true, reason: eligibility.reason, conversationId: convId };
+  }
   for (const t of texts) {
     await client.createMessage(convId, { content: t, message_type: "outgoing", private: false, content_type: "text" });
   }

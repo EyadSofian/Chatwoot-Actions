@@ -1,6 +1,7 @@
 import { ChatwootClient, buildFilterPayload, getMeta, getPayload } from "./chatwootClient.js";
 import { automationSettingsToRouterOptions } from "./automationSettings.js";
 import { appendAudit, appendMetricEvent, getDepartmentRoute, readAutomationSettings, readMetricEvents, saveDepartmentRoute, saveJob } from "./store.js";
+import { checkBotpressWriteEligibility } from "./botpressEligibility.js";
 
 const DEFAULT_STATUSES = ["open", "pending", "resolved", "snoozed"];
 const REOPEN_ROUTER_DEFAULT_UNAVAILABLE = ["offline", "busy", "away", "unavailable", "missing"];
@@ -754,6 +755,10 @@ export async function handleBotpressCloudHandoff(body = {}, options = {}) {
   const response = await client.conversationDetails(conversationId);
   const conversation = unwrapConversationResponse(response) || { id: conversationId };
   conversation.id = conversation.id || conversationId;
+  const eligibility = await checkBotpressWriteEligibility(client, conversationId, conversation);
+  if (!eligibility.allowed) {
+    return { ok: true, skipped: true, reason: eligibility.reason, conversationId };
+  }
   const localRoute = await config.stateStore.get(conversationId);
 
   if (botpressConfig.requireResolvedReentry && !isBotpressResolvedReentry(body, conversation, localRoute)) {

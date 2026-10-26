@@ -337,7 +337,9 @@ async function route(req, res) {
   if (req.method === "POST" && (url.pathname === "/botpress-cloud" || url.pathname === "/api/botpress-cloud")) {
     if (!isBotpressRoute(req)) return sendJson(res, 404, { error: "Not found" });
     const body = await readJsonBody(req);
-    return sendJson(res, 200, await handleBotpressCloudHandoff(body));
+    const result = await handleBotpressCloudHandoff(body);
+    console.log("botpress handoff:", JSON.stringify({ conversationId: result.conversationId, action: result.action, reason: result.reason }));
+    return sendJson(res, 200, result);
   }
 
   if (req.method === "POST" && url.pathname === "/api/chatwoot/audit") {
@@ -467,7 +469,9 @@ async function route(req, res) {
       return;
     }
     const body = parseJsonBody(rawBody);
-    return sendJson(res, 200, await handleBotpressResponse(body));
+    const result = await handleBotpressResponse(body);
+    console.log("botpress response:", JSON.stringify({ conversationId: result.conversationId, sent: result.sent, reason: result.reason }));
+    return sendJson(res, 200, result);
   }
 
   if (req.method === "GET") {
